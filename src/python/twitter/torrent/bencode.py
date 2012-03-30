@@ -1,4 +1,4 @@
-class BEncoder(BBase):
+class BEncoder(object):
   class Error(Exception): pass
 
   @staticmethod

@@ -1,3 +1,5 @@
+from twitter.common.lang import Compatibility
+
 class BEncoder(object):
   class Error(Exception): pass
 
@@ -14,7 +16,7 @@ class BEncoder(object):
 
   @staticmethod
   def encode_str(input):
-    BEncoder.assert_type(input, str)
+    BEncoder.assert_type(input, Compatibility.string)
     return '%d:%s' % (len(input), input)
 
   @staticmethod
@@ -44,6 +46,9 @@ BEncoder.INPUT_TYPES = {
   list: BEncoder.encode_list,
   dict: BEncoder.encode_dict
 }
+
+if Compatibility.PY2:
+  BEncoder.INPUT_TYPES[unicode] = BEncoder.encode_str
 
 
 class BDecoder(object):

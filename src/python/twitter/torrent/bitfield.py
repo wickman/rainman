@@ -24,7 +24,10 @@ class Bitfield(object):
     byte_index, bit_index = divmod(index, 8)
     if byte_index >= len(self._array):
       raise IndexError
-    self._array[byte_index] |= (1 << bit_index)
+    if value:
+      self._array[byte_index] |= (1 << bit_index)
+    else:
+      self._array[byte_index] &= (~(1 << bit_index) % 256)
 
   def __len__(self):
     return self._length

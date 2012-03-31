@@ -1,15 +1,23 @@
 import hashlib
+import math
 import os
 import tempfile
 
 from twitter.common.collections import OrderedSet
+from twitter.common.quantity import Amount, Data
 
 from .bencode import BEncoder, BDecoder
 
-class MetaInfo(object):
+class Torrent(object):
+  @staticmethod
+  def from_file(filename):
+    with open(filename, 'rb') as fp:
+      mi, _ = BDecoder.decode(fp.read())
+    return Torrent(mi)
+
   def __init__(self, d=None):
     self._d = d or {}
-    self._d['info'] = MetaInfoInfo(self._d.get('info'))
+    self._d['info'] = MetaInfo(self._d.get('info'))
 
   @property
   def announce(self):
@@ -27,8 +35,8 @@ class MetaInfo(object):
   @info.setter
   def info(self, value):
     if isinstance(value, dict):
-      self._d['info'] = MetaInfoInfo(value)
-    elif isinstance(value, MetaInfoInfo):
+      self._d['info'] = MetaInfo(value)
+    elif isinstance(value, MetaInfo):
       self._d['info'] = value
     else:
       raise ValueError(value)
@@ -56,80 +64,131 @@ class MetaInfoFile(object):
   def length(self):
     return self.end - self.start
 
-  def to_dict(self):
-    return {
-      'length': self.length,
-      'path': [element.encode(MetaInfoInfo.ENCODING) for element in self.name.split(os.path.sep)],
-    }
+  def __repr__(self):
+    return 'MetaInfoFile(%r, %r, %r)' % (self._name, self._start, self._end)
 
 
-class MetaInfoInfo(object):
+class MetaInfoBuilder(object):
   """
-    MetaInfoInfo write API
-      mii = MetaInfoInfo(chroot='/tmp')
-      mii.add('foo.zip')
-      mii.add('bar.zip')
-      mii.remove('foo.zip')
+    Helper class for constructing MetaInfo objects.
 
-    mii = MetaInfoInfo.from_dict(...)  # bencoded, read API
-    mii = MetaInfoInfo.from_torrent(...)
-    mii = MetaInfoInfo.from_filename(...)
-    mii = MetaInfoInfo.from_dir(...)
-
-    mii.files => list of MetaInfoInfoFile
-      MetaInfoInfoFile:
-         .start, .end
-         .length
-         .name
+    builder = MetaInfoBuilder('my_package')
+    for fn in os.listdir('.'):
+      builder.add(fn)
+    metainfo = builder.build()
   """
 
   class FileNotFound(Exception): pass
   class EmptyInfo(Exception): pass
 
-  DEFAULT_PIECE_LENGTH = 2**16
-  ENCODING = 'utf-8'
+  MIN_CHUNK_SIZE = Amount(64, Data.KB)
+  MAX_CHUNK_SIZE = Amount(1, Data.MB)
+  DEFAULT_CHUNKS = 256
 
-  def __init__(self):
-    self._chroot = None
+  def __init__(self, name=None):
+    self._name = name
     self._files = OrderedSet()
+    self._stats = {}
 
   def add(self, filename):
-    if not os.path.exists(filename):
-      raise MetaInfoInfo.FileNotFound("Could not find %s" % filename)
+    try:
+      stat = os.stat(filename)
+    except OSError:
+      if e.errno == errno.ENOENT:
+        raise MetaInfoBuilder.FileNotFound("Could not find %s" % filename)
+      raise
     self._files.add(filename)
+    self._stats[filename] = stat.st_size
 
   def remove(self, filename):
     self._files.discard(filename)
+    self._stats.pop(filename)
 
-  def to_dict(self):
+  @staticmethod
+  def choose_size(total_size):
+    chunksize = 2**int(round(math.log(1. * total_size / MetaInfoBuilder.DEFAULT_CHUNKS, 2)))
+    if chunksize < MetaInfoBuilder.MIN_CHUNK_SIZE.as_(Data.BYTES):
+      return int(MetaInfoBuilder.MIN_CHUNK_SIZE.as_(Data.BYTES))
+    elif chunksize > MetaInfoBuilder.MAX_CHUNK_SIZE.as_(Data.BYTES):
+      return int(MetaInfoBuilder.MAX_CHUNK_SIZE.as_(Data.BYTES))
+    return chunksize
+
+  def build(self):
     if len(self._files) == 0:
-      raise MetaInfoInfo.EmptyInfo("No files in metainfo!")
+      raise MetaInfoBuilder.EmptyInfo("No files in metainfo!")
+    total_size = sum(self._stats.values())
+    piece_size = MetaInfoBuilder.choose_size(total_size)
     d = {
-      'pieces': ''.join(hashlib.sha1(chunk).digest() for chunk in iter(self)),
-      'piece length': MetaInfoInfo.DEFAULT_PIECE_LENGTH
+      'pieces': ''.join(hashlib.sha1(chunk).digest() for chunk in self.iter_chunks(piece_size)),
+      'piece length': piece_size
     }
+    if self._name:
+      d.update(name = self._name)
     if len(self._files) == 1:
-      d.update(length = sum(os.path.getsize(fn) for fn in self._files),
-               name = os.path.basename(self._files[0]))
+      d.update(length = sum(self._stats[fn] for fn in self._files),
+               name = os.path.basename(iter(self._files).next()))
     else:
       d.update(files = [
-        {'length': os.path.getsize(fn),
-         'path': [sp.encode(MetaInfoInfo.ENCODING) for sp in fn.split(os.path.sep)]}
+        {'length': self._stats[fn],
+         'path': [sp.encode(MetaInfo.ENCODING) for sp in fn.split(os.path.sep)]}
         for fn in self._files])
-    return d
+    return MetaInfo(d)
 
-  def __iter__(self):
+  def iter_chunks(self, chunksize):
     chunk = ''
     for fn in self._files:
-      fp = open(fn)
-      while True:
-        addendum = fp.read(MetaInfoInfo.DEFAULT_PIECE_LENGTH - len(chunk))
-        chunk += addendum
-        if len(chunk) == MetaInfoInfo.DEFAULT_PIECE_LENGTH:
-          yield chunk
-          chunk = ''
-        if len(addendum) == 0:
-          fp.close()
-          break
+      with open(fn, 'rb') as fp:
+        while True:
+          addendum = fp.read(chunksize - len(chunk))
+          chunk += addendum
+          if len(chunk) == chunksize:
+            yield chunk
+            chunk = ''
+          if len(addendum) == 0:
+            break
     if len(chunk) > 0:
       yield chunk
+
+
+class MetaInfo(object):
+  ENCODING = 'utf8'
+
+  def __init__(self, info):
+    self._info = info
+    self._assert_sanity()
+
+  def _assert_sanity(self):
+    expected_keys = ('pieces', 'piece length',)
+    for key in expected_keys:
+      assert key in self._info
+    assert ('length' in self._info) + ('files' in self._info) == 1
+    if 'length' in self._info:
+      pieces, leftover = divmod(self._info['length'], self._info['piece length'])
+      pieces += leftover > 0
+      assert len(self._info['pieces']) == pieces * 20
+
+  @property
+  def name(self):
+    return self._info.get('name')
+
+  @property
+  def piece_length(self):
+    return self._info.get('piece length')
+
+  @property
+  def pieces(self):
+    pieces = self._info.get('pieces')
+    for k in range(0, len(pieces), 20):
+      yield pieces[k : k+20]
+
+  @property
+  def files(self):
+    if 'length' in self._info:
+      yield MetaInfoFile(self.name, 0, self._info['length'])
+    else:
+      offset = 0
+      for fd in self._info.get('files'):
+        path = self._info.get('name', []) + fd['path']
+        yield MetaInfoFile(os.path.join(*path), offset, offset + fd['length'])
+        offset += fd['length']
+

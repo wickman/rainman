@@ -1,12 +1,12 @@
 python_test_suite(name = 'torrent',
   dependencies = [
-    pants(':test_bencode'),
+    pants(':test_codec'),
     pants(':test_bitfield'),
   ]
 )
 
-python_tests(name = 'test_bencode',
-  sources = ['test_bencode.py'],
+python_tests(name = 'test_codec',
+  sources = ['test_codec.py'],
   dependencies = [pants('src/python/twitter/torrent')]
 )
 

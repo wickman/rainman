@@ -1,6 +1,6 @@
 import random
 import sys
-from twitter.torrent.bencode import BEncoder, BDecoder
+from twitter.torrent.codec import BEncoder, BDecoder
 
 
 def test_encode_int():

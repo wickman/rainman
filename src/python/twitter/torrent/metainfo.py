@@ -6,7 +6,7 @@ import tempfile
 from twitter.common.collections import OrderedSet
 from twitter.common.quantity import Amount, Data
 
-from .bencode import BEncoder, BDecoder
+from .codec import BEncoder, BDecoder
 
 class Torrent(object):
   @staticmethod

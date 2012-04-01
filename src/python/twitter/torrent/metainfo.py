@@ -192,3 +192,5 @@ class MetaInfo(object):
         yield MetaInfoFile(os.path.join(*path), offset, offset + fd['length'])
         offset += fd['length']
 
+  def raw(self):
+    return BEncoder.encode(self._info)

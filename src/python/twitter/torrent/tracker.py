@@ -24,7 +24,7 @@ class TrackerRequest(object):
     'downloaded',
     'left',
   ])
-  
+
   OPTIONAL_KEYS = set(['ip', 'event'])
 
   def __init__(self, request):
@@ -33,7 +33,7 @@ class TrackerRequest(object):
     for key in TrackerRequest.REQUIRED_KEYS:
       if key not in request.GET:
         raise TrackerRequest.MalformedRequestError('Missing key %s' % key)
-  
+
   @property
   def hash(self):
     return self._request['info_hash']
@@ -55,15 +55,15 @@ class Peer(object):
     self._id   = request['peer_id']
     self._uploaded = self._downloaded = self._left = self._event = None
     self.update(get)
-  
+
   @property
   def id(self):
     return self._id
-  
+
   @property
   def ip(self):
     return self._ip
-  
+
   @property
   def port(self):
     return self._port
@@ -82,6 +82,7 @@ class Tracker(HttpServer):
   def __init__(self):
     self._torrents = {}
 
+  # TODO: This should respond in text/plain.
   @HttpServer.route('/')
   def main(self):
     try:
@@ -110,7 +111,7 @@ class Tracker(HttpServer):
         self._torrents[request.hash][request['peer_id']] = Peer(request)
     else:
       self._torrents[request.hash] = {request['peer_id']: Peer(request)}
-  
+
   def expire_peers(self):
     # TODO: Implement culling of expired peers.
     pass

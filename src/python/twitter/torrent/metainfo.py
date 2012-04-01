@@ -182,6 +182,10 @@ class MetaInfo(object):
       yield pieces[k : k+20]
 
   @property
+  def num_pieces(self):
+    return len(self._info.get('pieces')) / 20
+
+  @property
   def files(self):
     if 'length' in self._info:
       yield MetaInfoFile(self.name, 0, self._info['length'])

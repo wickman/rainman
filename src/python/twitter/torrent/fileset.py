@@ -23,6 +23,14 @@ class Fileset(object):
       chroot (optional): location to store (or resume) this fileset.
                          if not supplied, create a new one.
     """
+    # Assert sanity of input and compute filename of on-disk piece cache.
+    sha = hashlib.sha1()
+    for fn, fs in files:
+      assert isinstance(fn, str)
+      assert isinstance(fs, int) and fs >= 0
+      sha.update(fn)
+      sha.update(struct.pack('>q', fs))
+    self._hash = sha.digest()
     self._chroot = chroot or tempfile.mkdtemp()
     safe_mkdir(self._chroot)
     self._files = files
@@ -30,15 +38,7 @@ class Fileset(object):
     self._piece_size = piece_size
     self._initialized = False
     self._splat = chr(0) * piece_size
-    self._hash = self.compute_hash()
     self.initialize()
-
-  def compute_hash(self):
-    sha = hashlib.sha1()
-    for filename, filesize in self._files:
-      sha.update(filename)
-      sha.update(struct.pack('>q', filesize))
-    return sha.hexdigest()
 
   @staticmethod
   def safe_size(filename):

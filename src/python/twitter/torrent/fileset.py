@@ -24,10 +24,18 @@ class Fileset(object):
                          if not supplied, create a new one.
     """
     # Assert sanity of input and compute filename of on-disk piece cache.
+    if not (isinstance(piece_size, int) and piece_size > 0):
+      raise ValueError('Expected piece size to be a positive integer.')
     sha = hashlib.sha1()
-    for fn, fs in files:
-      assert isinstance(fn, str)
-      assert isinstance(fs, int) and fs >= 0
+    for file_pair in files:
+      try:
+        fn, fs = file_pair
+      except (ValueError, TypeError):
+        raise ValueError('Expected files to be a list of file, size pairs.')
+      if not isinstance(fn, str):
+        raise ValueError('Expect filenames to be strings.')
+      if not (isinstance(fs, int) and fs >= 0):
+        raise ValueError('Expected filesize to be a non-negative integer.')
       sha.update(fn)
       sha.update(struct.pack('>q', fs))
     self._hash = sha.digest()
@@ -116,3 +124,6 @@ class Fileset(object):
             break
     if len(chunk) > 0:
       yield chunk
+
+  def destroy(self):
+    safe_rmtree(self._chroot)

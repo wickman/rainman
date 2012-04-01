@@ -111,3 +111,4 @@ class Session(threading.Thread):
     # self._io_loop.start()
     # bind(...)
     # initialize peer set
+    pass

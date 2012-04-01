@@ -54,68 +54,6 @@ class PeerHandshaker(object):
     return PeerHandshaker.handshake(self._metainfo, self._remote_peer_id)
 
 
-class Client(object):
-  """
-    Merge this with the PeerManager.
-
-    Given a:
-      torrent + port (?)
-
-    Provides:
-      contact with the tracker
-      a list of relevant peers and the pieces they own
-      upload/download/left statistics
-      place to coorinate which pieces to go after
-  """
-  def __init__(self, torrent, port):
-    self._torrent = torrent
-    self._port = port
-    self._io_loop = tornado.ioloop.IOLoop.instance()
-    self._upload_bytes = 0
-    self._download_bytes = 0
-    self._queue = BitfieldPriorityQueue(self._torrent.info.num_pieces)
-
-  def id(self):
-    return {
-      'info_hash': hashlib.sha1(self._tororent.info.raw()).digest(),
-      'peer_id': PeerHandshaker.id(),
-      'ip': socket.gethostbyname(socket.gethostname()),  # TODO: how to get external IP?
-      'port': self._port,
-      'uploaded': self._upload_bytes,
-      'downloaded': self._download_bytes,
-      'left': self._torrent.info.length - self._torrent.info.piece_length * self._queue.left,
-    }
-
-
-class PeerManager(object):
-  STATES = ('started', 'completed', 'stopped')
-
-  def __init__(self, torrent, port, io_loop=None):
-    self._client = Client(torrent, port)
-    self._io_loop = io_loop or tornado.ioloop.IOLoop.instance()
-    self._tracker_url = torrent.announce
-    self._metainfo = torrent.info
-    self._http_client = httpclient.AsyncHTTPClient()
-    self._peers = {}
-    self._io_loop.add_callback(self.start)
-
-  def start(self):
-    self.enqueue_request(event='started')
-
-  def enqueue_request(self, event=None):
-    request = self._client.id()
-    if event:
-      request.update(event=event)
-    url = self._tracker_url + urllib.urlencode(request)
-    self._http_client.fetch(url, self.handle_response)
-
-  def handle_response(self, response):
-    # XXX start here when you're sober.
-    pass
-
-  def get(self, address):
-    """Return peer id at address, None if none found."""
-    return self._peers.get(address)
 
 
 class PeerListener(TCPServer):

@@ -172,6 +172,13 @@ class MetaInfo(object):
     return self._info.get('name')
 
   @property
+  def length(self):
+    if 'length' in self._info:
+      return self._info['length']
+    else:
+      return sum(file['length'] for file in self._info.get('files', []))
+
+  @property
   def piece_length(self):
     return self._info.get('piece length')
 

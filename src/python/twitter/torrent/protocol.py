@@ -1,3 +1,4 @@
+import array
 from collections import namedtuple
 import errno
 import functools
@@ -5,11 +6,17 @@ import hashlib
 import random
 import socket
 import time
+import urllib2
 
 from twitter.common.collections import OrderedSet
 from twitter.common.quantity import Amount, Time
 
 import tornado.ioloop
+from tornado.netutil import TCPServer
+from tornado import httpclient
+
+
+from .bitfield import Bitfield
 
 
 class PeerHandshaker(object):
@@ -21,10 +28,11 @@ class PeerHandshaker(object):
   PEER_ID = None
   PEER_PREFIX = '-TW7712-'  # TWTTR
 
-  @staticmethod
-  def id():
+  @classmethod
+  def id(cls):
     if cls.PEER_ID is None:
-      cls.PEER_ID = cls.PREFIX + ''.join(random.sample('0123456789abcdef', 20 - len(cls.PREFIX)))
+      cls.PEER_ID = cls.PEER_PREFIX + ''.join(
+          random.sample('0123456789abcdef', 20 - len(cls.PEER_PREFIX)))
     return cls.PEER_ID
 
   @staticmethod
@@ -46,15 +54,63 @@ class PeerHandshaker(object):
     return PeerHandshaker.handshake(self._metainfo, self._remote_peer_id)
 
 
+class Client(object):
+  """
+    Merge this with the PeerManager.
+
+    Given a:
+      torrent + port (?)
+
+    Provides:
+      contact with the tracker
+      a list of relevant peers and the pieces they own
+      upload/download/left statistics
+      place to coorinate which pieces to go after
+  """
+  def __init__(self, torrent, port):
+    self._torrent = torrent
+    self._port = port
+    self._io_loop = tornado.ioloop.IOLoop.instance()
+    self._upload_bytes = 0
+    self._download_bytes = 0
+    self._queue = BitfieldPriorityQueue(self._torrent.info.num_pieces)
+
+  def id(self):
+    return {
+      'info_hash': hashlib.sha1(self._tororent.info.raw()).digest(),
+      'peer_id': PeerHandshaker.id(),
+      'ip': socket.gethostbyname(socket.gethostname()),  # TODO: how to get external IP?
+      'port': self._port,
+      'uploaded': self._upload_bytes,
+      'downloaded': self._download_bytes,
+      'left': self._torrent.info.length - self._torrent.info.piece_length * self._queue.left,
+    }
+
+
 class PeerManager(object):
-  def __init__(self, torrent, io_loop=None):
+  STATES = ('started', 'completed', 'stopped')
+
+  def __init__(self, torrent, port, io_loop=None):
+    self._client = Client(torrent, port)
     self._io_loop = io_loop or tornado.ioloop.IOLoop.instance()
     self._tracker_url = torrent.announce
-    self._next_interval = Amount(0, Time.SECONDS)
+    self._metainfo = torrent.info
+    self._http_client = httpclient.AsyncHTTPClient()
     self._peers = {}
+    self._io_loop.add_callback(self.start)
 
   def start(self):
-    # do get request, populate peers, set timer for next get
+    self.enqueue_request(event='started')
+
+  def enqueue_request(self, event=None):
+    request = self._client.id()
+    if event:
+      request.update(event=event)
+    url = self._tracker_url + urllib.urlencode(request)
+    self._http_client.fetch(url, self.handle_response)
+
+  def handle_response(self, response):
+    # XXX start here when you're sober.
     pass
 
   def get(self, address):
@@ -75,7 +131,6 @@ class PeerListener(TCPServer):
   def __init__(self, torrent, io_loop=None, port=None):
     self._metainfo = torrent.info
     super(PeerListener, self).__init__(io_loop=io_loop)
-    self._manager = PeerManager(self._metainfo, self.io_loop)
     port_range = [port] if port else BTProtocolListener.PORT_RANGE
     for port in port_range:
       try:
@@ -86,6 +141,7 @@ class PeerListener(TCPServer):
     else:
       raise PeerListener.BindError('Could not bind to any port in range %s' % repr(port_range))
     self._port = port
+    self._manager = PeerManager(torrent, self_port, self.io_loop)
     self._peers = {}
     self._filter_callback = tornado.ioloop.PeriodicCallback(self.filter_streams,
       PeerListener.FILTER_INTERVAL.as_(Time.MILLISECONDS), self.io_loop)
@@ -194,6 +250,7 @@ class PeerConnection(object):
 
   def cancel(self, index, begin, length):
     self._queue.discard(PeerRequest(index, begin, length))
+
 
 
 class PeerSession(object):

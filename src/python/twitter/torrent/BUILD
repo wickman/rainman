@@ -4,7 +4,8 @@ python_library(
   dependencies = [
     pants('src/python/twitter/common/lang'),
     pants('src/python/twitter/common/http'),
-    pants('src/python/twitter/common/quantity')
+    pants('src/python/twitter/common/quantity'),
+    python_requirement('tornado')
   ]
 )
 

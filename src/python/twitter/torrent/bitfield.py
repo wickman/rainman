@@ -1,4 +1,5 @@
 import array
+import random
 
 class Bitfield(object):
   def __init__(self, length, default=False):
@@ -31,3 +32,36 @@ class Bitfield(object):
 
   def __len__(self):
     return self._length
+
+
+class BitfieldPriorityQueue(object):
+  # The glaring bug of course is the case of > 255 peers.  Pretty sure you're supposed
+  # to have fewer than 50.
+
+  def __init__(self, length):
+    self._length = length
+    self._bitfield = Bitfield(length)
+    self._owners = array.array('B', [0] * length)
+
+  def have(self, index):
+    self._bitfield[index] = True
+
+  def add(self, bitfield):
+    for k in range(len(bitfield)):
+      self._owners[k] += bitfield[k]
+
+  def remove(self, bitfield):
+    for k in range(len(bitfield)):
+      self._owners[k] -= bitfield[k]
+
+  # This is inefficient as fuck
+  def get(self, count=10):
+    enumerated = sorted(
+        [(self._owners[k], k) for k in range(self._length)
+          if not self._bitfield[k] and self._owners[k]], reverse=True)
+    first = enumerated[:count]
+    random.shuffle(first)
+    return first
+
+  def left(self):
+    return self._length - sum(self._bitfield[k] for k in range(self._length))

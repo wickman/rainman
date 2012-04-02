@@ -66,7 +66,7 @@ class PeerListener(TCPServer):
   def log(cls, msg):
     print('PeerListener: %s' % msg)
 
-  def __init__(self, torrent, io_loop=None, port=None):
+  def __init__(self, session, io_loop=None, port=None):
     self._metainfo = torrent.info
     super(PeerListener, self).__init__(io_loop=io_loop)
     port_range = [port] if port else BTProtocolListener.PORT_RANGE

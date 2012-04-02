@@ -6,16 +6,21 @@ import threading
 import urllib
 
 from twitter.common import log
+from twitter.common.quantity import Amount, Time
+
 import tornado.ioloop
 from tornado import httpclient
+from tornado.netutil import TCPServer
 
 from .bitfield import BitfieldPriorityQueue
 from .codec import BDecoder
 from .peer import PeerId
 
+
 class Peer(object):
   def __init__(self):
     pass
+
 
 class PeerSet(object):
   # Requiring only read-only access to the session, manages the set of peers
@@ -99,6 +104,35 @@ class PeerSet(object):
     return self._peers.get(peer_id)
 
 
+class PeerListener(TCPServer):
+  class BindError(Exception): pass
+
+  PORT_RANGE = range(6181, 6190)
+  FILTER_INTERVAL = Amount(1, Time.MINUTES)
+
+  def __init__(self, handler, io_loop=None, port=None):
+    self._handler = handler
+    super(PeerListener, self).__init__(io_loop=io_loop)
+    port_range = [port] if port else PeerListener.PORT_RANGE
+    for port in port_range:
+      try:
+        self.listen(port)
+        break
+      except OSError as e:
+        if e.errno == errno.EADDRINUSE:
+          continue
+    else:
+      raise PeerListener.BindError('Could not bind to any port in range %s' % repr(port_range))
+    self._port = port
+
+  @property
+  def port(self):
+    return self._port
+
+  def handle_stream(self, iostream, address):
+    self._handler(address, iostream)
+
+
 class Session(threading.Thread):
   """
     Initialized with:
@@ -128,12 +162,13 @@ class Session(threading.Thread):
       - the ability to register a peer with a tracker.
       - locate peers via a tracker.
   """
-  DEFAULT_RANGE = range(6181, 6190)
+  SCHEDULE_INTERVAL = Amount(250, Time.MILLISECONDS)
 
   def __init__(self, torrent, port=None):
     self._torrent = torrent
     self._port = port
-    self._peers = None
+    self._peers = None     # PeerSet
+    self._listener = None  # PeerListener
     self._peer_id = None
     self._io_loop = tornado.ioloop.IOLoop()
     self._uploaded_bytes = 0
@@ -141,6 +176,9 @@ class Session(threading.Thread):
     self._assembled_bytes = 0
     self._queue = BitfieldPriorityQueue(self._torrent.info.num_pieces)
     super(Session, self).__init__()
+    self.daemon = True
+
+  # ---- properties
 
   @property
   def port(self):
@@ -176,8 +214,29 @@ class Session(threading.Thread):
   def queue(self):
     return self._queue
 
+  # ----- mutations
+
+  def add_peer(self, address, iostream=None):
+    # Add peer at address.  If iostream is provided, then that means it's an inbound
+    # connection.  Otherwise we should attempt to make the outbound connection.
+    log.info('Adding peer: %s' % address)
+    pass
+
+  def schedule(self):
+    log.debug('Scheduler called.')
+    pass
+
+  # ----- start thread =>
+  #       bind to port =>
+  #       initialize peer set =>
+  #       activate listener on port
   def run(self):
     # self._io_loop.start()
     # bind(...)
     # initialize peer set
-    pass
+    self._listener = PeerListener(self.add_peer, io_loop=self._io_loop, port=self._port)
+    self._port = self._listener.port
+    self._peers = PeerSet(self)
+    tornado.ioloop.PeriodicCallback(self.schedule,
+        Session.SCHEDULE_INTERVAL.as_(Time.MILLISECONDS), self._io_loop)
+    self._io_loop.start()

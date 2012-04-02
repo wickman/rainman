@@ -17,7 +17,12 @@ class Torrent(object):
 
   def __init__(self, d=None):
     self._d = d or {}
-    self._d['info'] = MetaInfo(self._d.get('info'))
+    self._info = MetaInfo(self._d.get('info')) if 'info' in self._d else None
+
+  def to_file(self, filename):
+    assert 'announce' in self._d and 'info' in self._d
+    with open(filename, 'wb') as fp:
+      fp.write(BEncoder.encode(self._d))
 
   @property
   def announce(self):
@@ -30,14 +35,16 @@ class Torrent(object):
 
   @property
   def info(self):
-    return self._d.get('info')
+    return self._info
 
   @info.setter
   def info(self, value):
     if isinstance(value, dict):
-      self._d['info'] = MetaInfo(value)
-    elif isinstance(value, MetaInfo):
       self._d['info'] = value
+      self._info = MetaInfo(value)
+    elif isinstance(value, MetaInfo):
+      self._info = value
+      self._d['info'] = value.as_dict()
     else:
       raise ValueError(value)
 
@@ -68,6 +75,8 @@ class MetaInfoFile(object):
     return 'MetaInfoFile(%r, %r, %r)' % (self._name, self._start, self._end)
 
 
+# TODO(wickman)  Call the appropriate parts of Fileset here instead of
+# cargo-culting iter_chunks.
 class MetaInfoBuilder(object):
   """
     Helper class for constructing MetaInfo objects.
@@ -160,7 +169,7 @@ class MetaInfo(object):
   def _assert_sanity(self):
     expected_keys = ('pieces', 'piece length',)
     for key in expected_keys:
-      assert key in self._info
+      assert key in self._info, 'Missing key: %s' % key
     assert ('length' in self._info) + ('files' in self._info) == 1
     if 'length' in self._info:
       pieces, leftover = divmod(self._info['length'], self._info['piece length'])
@@ -205,3 +214,6 @@ class MetaInfo(object):
 
   def raw(self):
     return BEncoder.encode(self._info)
+
+  def as_dict(self):
+    return self._info

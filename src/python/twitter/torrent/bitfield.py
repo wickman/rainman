@@ -1,6 +1,7 @@
 import array
 import random
 
+
 class Bitfield(object):
   def __init__(self, length, default=False):
     self._length = length
@@ -63,5 +64,6 @@ class BitfieldPriorityQueue(object):
     random.shuffle(first)
     return first
 
+  @property
   def left(self):
     return self._length - sum(self._bitfield[k] for k in range(self._length))

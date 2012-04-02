@@ -34,6 +34,9 @@ class TrackerRequest(object):
       if key not in request.GET:
         raise TrackerRequest.MalformedRequestError('Missing key %s' % key)
 
+  def get(self, key, default=None):
+    return self._request.get(key, default)
+
   @property
   def hash(self):
     return self._request['info_hash']
@@ -54,7 +57,7 @@ class Peer(object):
     self._ip   = request.ip
     self._id   = request['peer_id']
     self._uploaded = self._downloaded = self._left = self._event = None
-    self.update(get)
+    self.update(request)
 
   @property
   def id(self):
@@ -70,10 +73,10 @@ class Peer(object):
 
   def update(self, request):
     # TODO: Implement tracking of peer statistics.
-    self._uploaded = get['uploaded']
-    self._downloaded = get['downloaded']
-    self._left = get['downloaded']
-    self._state = get.get('event', 'active')
+    self._uploaded = request['uploaded']
+    self._downloaded = request['downloaded']
+    self._left = request['left']
+    self._state = request.get('event', 'active')
 
 
 class Tracker(HttpServer):
@@ -99,7 +102,7 @@ class Tracker(HttpServer):
         { 'id': peer.id,
           'ip': peer.ip,
           'port': peer.port,
-        } for peer in self._torrents[request.hash]
+        } for peer in self._torrents[request.hash].values()
       ]
     })
 

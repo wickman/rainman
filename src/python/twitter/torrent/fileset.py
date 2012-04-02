@@ -6,15 +6,46 @@ import tempfile
 
 from twitter.common.dirutil import safe_mkdir, safe_rmtree
 
-# First size all the pieces if necessary.
-# If no sizing took place:
-#   If .{{sha}}.hashes exists and is the expected size:
-#     populate pieces with the data in the above
-# else:
-#   compute hashes
-#   write .{{sha}}.hashes
-#
-# TODO(wickman) Consider optimizing this if it becomes a bottleneck.
+
+# TODO(wickman) Do LRU filehandle caching here, since repeated open/close is going to be
+# costly.
+class FileSlice(object):
+  """
+    Represents a slice of a file.  Requires the contents of the file at the
+    slice exist.
+  """
+  class Error(Exception): pass
+  class ReadError(Error): pass
+  class WriteError(Error): pass
+
+  def __init__(self, filename, slyce):
+    self._filename = filename
+    self._slice = slyce
+    self._length = slyce.stop - slyce.start
+    assert self._length >= 0
+
+  @property
+  def length(self):
+    return self._length
+
+  def read(self):
+    with open(self._filename, 'rb') as fp:
+      fp.seek(self._slice.start)
+      data = fp.read(self._length)
+      if len(data) != self._length:
+        raise FileSlice.ReadError('File is truncated at this slice!')
+      return data
+
+  def write(self, data):
+    if len(data) != (self._slice.stop - self._slice.start):
+      raise FileSlice.WriteError('Block must be of appropriate size!')
+    with open(self._filename, 'r+b') as fp:
+      fp.seek(self._slice.start)
+      fp.write(data)
+
+  def __repr__(self):
+    return 'FileSlice(%r, slice(%r, %r))' % (self._filename, self._slice.start, self._slice.stop)
+
 
 class Fileset(object):
   def __init__(self, files, piece_size, chroot=None):
@@ -38,7 +69,7 @@ class Fileset(object):
         raise ValueError('Expected filesize to be a non-negative integer.')
       sha.update(fn)
       sha.update(struct.pack('>q', fs))
-    self._hash = sha.digest()
+    self._hash = sha.hexdigest()
     self._chroot = chroot or tempfile.mkdtemp()
     safe_mkdir(self._chroot)
     self._files = files
@@ -87,7 +118,7 @@ class Fileset(object):
         self._pieces = fp.read()
     else:
       self._pieces = ''.join(self.iter_hashes())
-      with open(pieces_file, 'w') as fp:
+      with open(pieces_file, 'wb') as fp:
         fp.write(self._pieces)
     self._initialized = True
 
@@ -95,16 +126,43 @@ class Fileset(object):
     return self._initialized
 
   def read(self, index, begin, length):
-    pass
+    return ''.join(fileslice.read() for fileslice in self.iter_slices(index, begin, length))
 
   def write(self, index, begin, block):
-    pass
+    offset = 0
+    for fileslice in self.iter_slices(index, begin, len(block)):
+      fileslice.write(block[offset:offset+fileslice.length])
+      offset += fileslice.length
 
   def hash(self, index):
     """
       Returns the computed (not cached) sha1 of the piece at index.
     """
-    pass
+    piece = ''.join(fileslice.read() for fileslice in self.iter_slices(index, 0, self._piece_size))
+    return hashlib.sha1(piece).digest()
+
+  # TODO(wickman) Index files by aggregate slice, then do a binary search here, if
+  # this seems to be slow for huge torrents.
+  def iter_slices(self, index, begin, length):
+    """
+      Given (piece index, begin, length), return an iterator over FileSlice objects
+      that cover the interval.
+    """
+    piece = slice(index * self._piece_size + begin,
+                  index * self._piece_size + begin + length)
+    offset = 0
+    for (fn, fs) in self._files:
+      if offset + fs <= piece.start:
+        offset += fs
+        continue
+      if offset >= piece.stop:
+        break
+      file = slice(offset, offset + fs)
+      overlap = slice(max(file.start, piece.start), min(file.stop, piece.stop))
+      if overlap.start < overlap.stop:
+        yield FileSlice(os.path.join(self._chroot, fn),
+                        slice(overlap.start - offset, overlap.stop - offset))
+      offset += fs
 
   def iter_hashes(self):
     for chunk in self.iter_pieces():

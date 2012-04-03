@@ -1,4 +1,6 @@
 import datetime
+import errno
+import functools
 import hashlib
 import socket
 import struct
@@ -9,17 +11,13 @@ from twitter.common import log
 from twitter.common.quantity import Amount, Time
 
 import tornado.ioloop
-from tornado import httpclient
+from tornado import gen, httpclient
 from tornado.netutil import TCPServer
+from tornado.iostream import IOStream
 
 from .bitfield import BitfieldPriorityQueue
 from .codec import BDecoder
-from .peer import PeerId
-
-
-class Peer(object):
-  def __init__(self):
-    pass
+from .peer import Peer, PeerId
 
 
 class PeerSet(object):
@@ -30,7 +28,8 @@ class PeerSet(object):
     self._tracker = session.torrent.announce
     self._io_loop = io_loop or session.io_loop or tornado.ioloop.IOLoop.instance()
     self._http_client = httpclient.AsyncHTTPClient(io_loop=self._io_loop)
-    self._peers = {}
+    self._peerset = set() # This breaks my golden rule of abstraction.
+    self._peermap = {}    #
     self._io_loop.add_callback(self.start)
     self._handle = None
 
@@ -66,16 +65,18 @@ class PeerSet(object):
     self._http_client.fetch(url, self.handle_response)
     log.debug('Tracker request sent')
 
-  @staticmethod
-  def iter_peers(peers):
-    if isinstance(peers, (tuple, list)):
-      for peer in peers:
-        yield (peer['ip'], peer['port'])
-    elif isinstance(peers, str):
-      for offset in range(0, len(peers), 6):
-        ip = peers[offset:offset+4]
-        port = peers[offset+4:offset+6]
-        yield ('%d.%d.%d.%d' % struct.unpack('>BBBB', ip), struct.unpack('>H', port)[0])
+  def iter_peers(self, peers):
+    def iterate():
+      if isinstance(peers, (tuple, list)):
+        for peer in peers:
+          yield (peer['ip'], peer['port'])
+      elif isinstance(peers, str):
+        for offset in range(0, len(peers), 6):
+          ip = peers[offset:offset+4]
+          port = peers[offset+4:offset+6]
+          yield ('%d.%d.%d.%d' % struct.unpack('>BBBB', ip), struct.unpack('>H', port)[0])
+    me = (socket.gethostbyname(socket.gethostname()), self._session.port)
+    return (pair for pair in iterate() if pair != me)
 
   def handle_response(self, response):
     interval = 60
@@ -88,10 +89,10 @@ class PeerSet(object):
         interval = response.get('interval', 60)
         peers = response.get('peers', [])
         log.debug('Accepted peer list:')
-        for peer in PeerSet.iter_peers(peers):
-          if peer not in self._peers:
+        for peer in self.iter_peers(peers):
+          if peer not in self._peermap:
             log.debug('  %s:%s' % (peer[0], peer[1]))
-            self._peers[peer] = Peer()
+            self.add(peer[0], peer[1])
       except BDecoder.Error:
         log.error('Malformed tracker response.')
       except AssertionError:
@@ -99,9 +100,18 @@ class PeerSet(object):
     log.debug('Enqueueing next tracker request for %s seconds from now.' % interval)
     self._handle = self._io_loop.add_timeout(datetime.timedelta(0, interval), self.enqueue_request)
 
-  def get(self, peer_id):
-    """Return (ip, port) of peer with peer_id."""
-    return self._peers.get(peer_id)
+  def __iter__(self):
+    return iter(self._peerset)
+
+  def __contains__(self, peer):
+    assert isinstance(peer, tuple) and len(peer) == 2
+    return peer in self._peermap or peer in self._peerset
+
+  def add(self, address, port):
+    rs = socket.getaddrinfo(address, port, socket.AF_INET, socket.SOCK_STREAM, socket.SOL_TCP)
+    log.debug('Adding resolved peers: %s' % ', '.join('%s:%s' % result[-1] for result in rs))
+    self._peermap[(address, port)] = set(result[-1] for result in rs)
+    self._peerset.update(result[-1] for result in rs)
 
 
 class PeerListener(TCPServer):
@@ -116,13 +126,15 @@ class PeerListener(TCPServer):
     port_range = [port] if port else PeerListener.PORT_RANGE
     for port in port_range:
       try:
+        log.debug('Peer listener attempting to bind @ %s' % port)
         self.listen(port)
         break
-      except OSError as e:
+      except IOError as e:
         if e.errno == errno.EADDRINUSE:
           continue
     else:
       raise PeerListener.BindError('Could not bind to any port in range %s' % repr(port_range))
+    log.debug('Bound at port %s' % port)
     self._port = port
 
   @property
@@ -133,50 +145,24 @@ class PeerListener(TCPServer):
     self._handler(address, iostream)
 
 
-class Session(threading.Thread):
-  """
-    Initialized with:
-      torrent
-
-    Generates its own:
-      peer id
-      ioloop
-
-    Start:
-      - Bind to a port.
-      - Register against tracker, requires:   |  PeerSet(tracker, Session.id)
-         * peer_id                            |
-         * port                               |
-         * torrent                            |
-      - Start listening.
-
-
-    Collects the following:
-      - set of peers
-      - upload / download statistics
-      - bitfield
-      - peer bitfield priority queue
-
-    Functionality:
-      - the ability to spawn a peer for this torrent.
-      - the ability to register a peer with a tracker.
-      - locate peers via a tracker.
-  """
+class Session(object):
   SCHEDULE_INTERVAL = Amount(250, Time.MILLISECONDS)
+  PEER_RETRY_INTERVAL = Amount(30, Time.SECONDS)
 
-  def __init__(self, torrent, port=None):
+  def __init__(self, torrent, port=None, io_loop=None):
     self._torrent = torrent
     self._port = port
     self._peers = None     # PeerSet
     self._listener = None  # PeerListener
+    self._connections = {} # address => Peer
     self._peer_id = None
-    self._io_loop = tornado.ioloop.IOLoop()
+    self._io_loop = io_loop or tornado.ioloop.IOLoop()  # singleton by default instead?
     self._uploaded_bytes = 0
     self._downloaded_bytes = 0
     self._assembled_bytes = 0
+    self._schedule_timer = None
+    self._schedules = 0
     self._queue = BitfieldPriorityQueue(self._torrent.info.num_pieces)
-    super(Session, self).__init__()
-    self.daemon = True
 
   # ---- properties
 
@@ -217,26 +203,53 @@ class Session(threading.Thread):
   # ----- mutations
 
   def add_peer(self, address, iostream=None):
-    # Add peer at address.  If iostream is provided, then that means it's an inbound
-    # connection.  Otherwise we should attempt to make the outbound connection.
-    log.info('Adding peer: %s' % address)
-    pass
+    log.info('Adding peer: %s (%s)' % (address, 'inbound' if iostream else 'outbound'))
+    if address in self._connections:
+      log.debug('  - already seen peer, skipping.')
+      if iostream: iostream.close()
+      return
+    self._connections[address] = None
+    new_peer = Peer(address, self, functools.partial(self._add_peer_cb, address))
+    if iostream is None:
+      iostream = IOStream(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+          io_loop=self.io_loop)
+      iostream.connect(address)
+    new_peer.handshake(iostream)
+
+  def _add_peer_cb(self, address, peer, succeeded):
+    log.debug('Add peer callback: %s:%s' % address)
+    if succeeded:
+      log.info('Session [%s] added peer %s:%s [%s]' % (self._peer_id, address[0], address[1],
+          peer.id))
+      for address, connected_peer in self._connections.items():
+        if connected_peer and peer.id == connected_peer.id:
+          log.info('Session already established with %s, disconnecting new one.' % peer.id)
+          peer.disconnect()
+          break
+      else:
+        self._connections[address] = peer
+    else:
+      def expire_retry():
+        log.debug('Expiring retry timer for %s:%s' % address)
+        if address not in self._connections or self._connections[address] is not None:
+          log.error('Unexpected connection state for %s!' % address)
+        else:
+          self._connections.pop(address, None)
+      self._io_loop.add_timeout(self.PEER_RETRY_INTERVAL.as_(Time.MILLISECONDS), expire_retry)
 
   def schedule(self):
-    log.debug('Scheduler called.')
-    pass
+    self._schedules += 1
+    if self._schedules % 40 == 0:
+      log.debug('Scheduler pass %d' % self._schedules)
+    for address in self._peers:
+      if address not in self._connections:
+        self.add_peer(address)
 
-  # ----- start thread =>
-  #       bind to port =>
-  #       initialize peer set =>
-  #       activate listener on port
-  def run(self):
-    # self._io_loop.start()
-    # bind(...)
-    # initialize peer set
+  def start(self):
     self._listener = PeerListener(self.add_peer, io_loop=self._io_loop, port=self._port)
     self._port = self._listener.port
     self._peers = PeerSet(self)
-    tornado.ioloop.PeriodicCallback(self.schedule,
+    self._schedule_timer = tornado.ioloop.PeriodicCallback(self.schedule,
         Session.SCHEDULE_INTERVAL.as_(Time.MILLISECONDS), self._io_loop)
+    self._schedule_timer.start()
     self._io_loop.start()

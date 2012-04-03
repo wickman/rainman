@@ -101,7 +101,7 @@ class Tracker(HttpServer):
       'peers': [
         { 'id': peer.id,
           'ip': peer.ip,
-          'port': peer.port,
+          'port': int(peer.port),
         } for peer in self._torrents[request.hash].values()
       ]
     })

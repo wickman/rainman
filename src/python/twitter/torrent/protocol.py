@@ -54,54 +54,6 @@ class PeerHandshaker(object):
     return PeerHandshaker.handshake(self._metainfo, self._remote_peer_id)
 
 
-
-
-class PeerListener(TCPServer):
-  class BindError(Exception): pass
-
-  PORT_RANGE = range(6181, 6190)
-  FILTER_INTERVAL = Amount(1, Time.MINUTES)
-
-  @classmethod
-  def log(cls, msg):
-    print('PeerListener: %s' % msg)
-
-  def __init__(self, session, io_loop=None, port=None):
-    self._metainfo = torrent.info
-    super(PeerListener, self).__init__(io_loop=io_loop)
-    port_range = [port] if port else BTProtocolListener.PORT_RANGE
-    for port in port_range:
-      try:
-        self.listen(port)
-      except OSError as e:
-        if e.errno == errno.EADDRINUSE:
-          continue
-    else:
-      raise PeerListener.BindError('Could not bind to any port in range %s' % repr(port_range))
-    self._port = port
-    self._manager = PeerManager(torrent, self_port, self.io_loop)
-    self._peers = {}
-    self._filter_callback = tornado.ioloop.PeriodicCallback(self.filter_streams,
-      PeerListener.FILTER_INTERVAL.as_(Time.MILLISECONDS), self.io_loop)
-    self._filter_callback.start()
-
-  def handle_stream(self, iostream, address):
-    remote_peer_id = self._manager.get(address)
-    if not remote_peer_id:
-      iostream.close()
-    self._peers[remote_peer_id] = PeerSession(
-      iostream, self._metainfo, PeerHandshaker(self._metainfo, remote_peer_id))
-
-  def filter_streams(self):
-    closed = set()
-    for peer_id, stream in self._peers:
-      if stream.closed():
-        cls.log('Peer ID %s hung up.' % peer_id)
-        closed.add(peer_id)
-    for peer_id in closed:
-      self._peers.pop(peer_id, None)
-
-
 class BTCommand(object):
   COMMANDS = {
     # Core Protocol

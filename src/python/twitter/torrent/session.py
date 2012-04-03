@@ -174,6 +174,7 @@ class Session(object):
   def peer_id(self):
     if self._peer_id is None:
       self._peer_id = PeerId.generate()
+      log.info('Started session %s' % self._peer_id)
     return self._peer_id
 
   @property

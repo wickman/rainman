@@ -68,8 +68,20 @@ class Peer(object):
     return self._ip
 
   @property
+  def address(self):
+    return (self.ip, self.port)
+
+  @property
   def port(self):
     return self._port
+
+  @property
+  def hash(self):
+    return self._hash
+
+  @property
+  def hex(self):
+    return ''.join(map(lambda byt: '%x' % byt, map(ord, self.hash)))
 
   def update(self, request):
     # TODO: Implement tracking of peer statistics.
@@ -83,7 +95,7 @@ class Tracker(HttpServer):
   DEFAULT_INTERVAL = Amount(30, Time.SECONDS)
 
   def __init__(self):
-    self._torrents = {}
+    self._torrents = defaultdict(dict)
 
   # TODO: This should respond in text/plain.
   @HttpServer.route('/')
@@ -107,13 +119,19 @@ class Tracker(HttpServer):
     })
 
   def update_peers(self, request):
-    if request.hash in self._torrents:
-      if request['peer_id'] in self._torrents[request.hash]:
-        self._torrents[request.hash][request['peer_id']].update(request)
-      else:
-        self._torrents[request.hash][request['peer_id']] = Peer(request)
+    peer = Peer(request)
+    if peer.address not in self._torrents[request.hash]:
+      log.info('Registering peer [%s @ %s:%s] against torrent %s' % (
+          peer.id, peer.ip, peer.port, peer.hex))
+      self._torrents[request.hash][peer.address] = peer
+      return
+
+    if peer.id != self._torrents[request.hash][peer.address].id:
+      log.info('Evicting old peer id %s on %s:%s' % (
+          self._torrents[request.hash][peer.address].id, peer.ip, peer.port))
+      self._torrents[request.hash][peer.address] = peer
     else:
-      self._torrents[request.hash] = {request['peer_id']: Peer(request)}
+      self._torrents[request.hash][peer.address].update(request)
 
   def expire_peers(self):
     # TODO: Implement culling of expired peers.

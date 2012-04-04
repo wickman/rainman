@@ -182,14 +182,13 @@ class Peer(object):
 
   def __init__(self, address, session, handshake_cb=None):
     self._id = None
+    self._active = False
     self._address = address
     self._session = session
     self._hash = hashlib.sha1(session.torrent.info.raw()).digest()
     self._handshake_cb = handshake_cb or (lambda *x: x)
     self._iostream = None
     self._bitfield = Bitfield(session.info.pieces)
-
-    # is this the right abstraction?
     self._in = ConnectionState()
     self._out = ConnectionState()
 
@@ -229,7 +228,7 @@ class Peer(object):
 
   @gen.engine
   def run(self):
-    while True:
+    while self._active:
       message_length = struct.unpack('>I', (yield gen.Task(self._iostream.read_bytes, 4)))[0]
       if message_length == 0:
         self._in.ping()
@@ -270,8 +269,10 @@ class Peer(object):
 
   @gen.engine
   def send(self, index, begin, length):
+    # timestamp / bandwidth statistic
     yield gen.Task(self._iostream.write, Command.wire(Command.PIECE,
         Piece(index, begin, length, session.fileset.read(index, begin, length))))
+    # timestamp / bandwidth statistic
 
   def dispatch(self, message_id, message_body, callback=None):
     if message_id == Command.CHOKE:
@@ -283,15 +284,21 @@ class Peer(object):
     elif message_id == Command.NOT_INTERESTED:
       self._in.uninterested()
     elif message_id == Command.HAVE:
-      self._in.have(struct.unpack('>I', message_body)[0])
+      piece, = struct.unpack('>I', message_body)
+      self._bitfield[piece] = True
+      self._session.pieces.have(piece)
     elif message_id == Command.BITFIELD:
+      self._session.pieces.remove(self._bitfield)
       self._bitfield.fill(message_body)
+      self._session.pieces.add(self._bitfield)
     elif message_id == Command.REQUEST:
       index, begin, length = struct.unpack('>III', message_body)
       self._in.queue.append(Piece(index, begin, length))
     elif message_id == Command.PIECE:
       index, begin = struct.unpack('>II', message[0:8])
+      # timestamp / bandwidth statistic
       self._in.queue.append(Piece(index, begin, len(message[8:]), message[8:]))
+      # timestamp / bandwidth statistic
     elif message_id == Command.CANCEL:
       index, begin, length = struct.unpack('>III', message_body)
       self._in.cancel_request(Piece(index, begin, length))
@@ -302,3 +309,4 @@ class Peer(object):
   def disconnect(self):
     if self._iostream:
       self._iostream.close()
+    self._active = False

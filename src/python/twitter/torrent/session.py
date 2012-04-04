@@ -15,9 +15,39 @@ from tornado import gen, httpclient
 from tornado.netutil import TCPServer
 from tornado.iostream import IOStream
 
-from .bitfield import BitfieldPriorityQueue
 from .codec import BDecoder
 from .peer import Peer, PeerId
+
+
+class PieceSet(object):
+  def __init__(self, length):
+    self._length = length
+    self._owners = array.array('B', [0] * length)
+
+  def have(self, index):
+    self._owners[index] += 1
+
+  def add(self, bitfield):
+    for k in range(len(bitfield)):
+      self._owners[k] += bitfield[k]
+
+  def remove(self, bitfield):
+    for k in range(len(bitfield)):
+      self._owners[k] -= bitfield[k]
+
+  # Premature optimization is the root of all evil?
+  def get(self, count=10, owned=None):
+    enumerated = sorted(
+        [(self._owners[k], k) for k in range(self._length)
+          if owned and not owned[k] and self._owners[k]], reverse=True)
+    first = enumerated[:count]
+    random.shuffle(first)
+    return first
+
+  @property
+  def left(self, owned):
+    return self._length - sum(owned)
+
 
 
 class PeerSet(object):
@@ -164,7 +194,7 @@ class Session(object):
     self._schedules = 0
     self._fileset = Fileset([(mif.name, mif.length) for mif in session.info.files],
         session.piece_size, chroot)
-    self._queue = BitfieldPriorityQueue(self._torrent.info.num_pieces)
+    self._pieces = PieceSet(self._torrent.info.num_pieces)
 
   # ---- properties
 
@@ -204,8 +234,8 @@ class Session(object):
     return self._assembled_bytes
 
   @property
-  def queue(self):
-    return self._queue
+  def pieces(self):
+    return self._pieces
 
   # ----- mutations
 
@@ -235,6 +265,7 @@ class Session(object):
           break
       else:
         self._connections[address] = peer
+        # peer.run()
     else:
       log.debug('Session [%s] failed to negotiate with %s:%s' % (self._peer_id,
         address[0], address[1]))
@@ -254,6 +285,35 @@ class Session(object):
     for address in self._peers:
       if address not in self._connections:
         self.add_peer(address)
+
+    # for peer in peers:
+    #   while peer.in:
+    #     piece = peer.in.popleft()
+    #     if piece.is_request:
+    #       fileset.read_threadpool.add((peer, piece))
+    #     else:
+    #       fileset.write_threadpool.add(piece)
+    #
+    # while fileset.read_threadpool.results:
+    #   peer, piece = fileset.read_threadpool.results.popleft()
+    #   peer.send(piece)
+    #
+    # while fileset.write_threadpool.results:
+    #   piece = fileset.write_threadpool.results.popleft()
+    #   self._requested_pieces.discard(piece)
+    #
+    # num_requested = len(self._requested_pieces)
+    # num_desired = PARALLELISM - num_requested
+    #
+    # to_enqueue = []
+    # for piece, owner in iter_rarest_pieces():
+    #   if piece not in self._requested_pieces:
+    #     to_enqueue.add((piece, owner))
+    #
+    # random.shuffle(to_enqueue)
+    # for (piece, owner) in to_enqueue:
+    #    owner.request(piece)
+
 
   def start(self):
     self._listener = PeerListener(self.add_peer, io_loop=self._io_loop, port=self._port)

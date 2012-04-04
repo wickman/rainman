@@ -88,7 +88,98 @@ class PeerHandshake(object):
     return self.is_set(self.EXTENSION_BITS['Extension protocol'])
 
 
+class Command(object):
+  CHOKE          = 0
+  UNCHOKE        = 1
+  INTERESTED     = 2
+  NOT_INTERESTED = 3
+  HAVE           = 4
+  BITFIELD       = 5
+  REQUEST        = 6
+  PIECE          = 7
+  CANCEL         = 8
+
+  @staticmethod
+  def wire(command, *args):
+    if command in (Command.CHOKE, Command.UNCHOKE, Command.INTERESTED, Command.NOT_INTERESTED):
+      return ''.join([struct.pack('>I', 1), struct.pack('B', command)]
+    elif command == Command.HAVE:
+      assert len(args) == 1
+      return ''.join([struct.pack('>I', 5), struct.pack('B', command), struct.pack('>I', args[0])])
+    elif command == Command.BITFIELD:
+      assert len(args) == 1
+      bitfield = args[0]
+      return ''.join([struct.pack('>I', 1 + bitfield.num_bytes), struct.pack('B', command),
+          bitfield.as_bytes()])
+    elif command in (Command.REQUEST, Command.CANCEL):
+      assert len(args) == 1 and isinstance(args[0], Piece)
+      piece = args[0]
+      assert piece.is_request
+      return ''.join([struct.pack('>I', 13), struct.pack('B', command),
+                      struct.pack('>III', piece.index, piece.begin, piece.length)])
+    elif command == Command.PIECE:
+      assert len(args) == 1 and isinstance(args[0], Piece)
+      piece = args[0]
+      assert not piece.is_request
+      return ''.join([struct.pack('>I', 9 + piece.length), struct.pack('B', command),
+                      struct.pack('>II', piece.index, piece.begin),
+                      piece.block])
+    else:
+      raise Peer.BadMessage('Unknown message id: %s' % command)
+    callback()
+
+
+class Piece(object):
+  def __init__(self, index, offset, length, block=None):
+    self.index = index
+    self.offset = offset
+    self.length = length
+    self.block = block
+
+  @property
+  def is_request(self):
+    return self.block is None
+
+  def __eq__(self, other):
+    return (self.index == other.index and
+            self.offset == other.offset and
+            self.length == other.length and
+            self.block == other.block)
+
+
+class ConnectionState(object):
+  def __init__(self):
+    self._last_alive = time.time()
+    self._interested = False
+    self._choked = True
+    self._queue = []
+
+  @property
+  def queue(self):
+    return self._queue
+
+  def ping(self):
+    self._last_alive = time.time()
+
+  def choke(self):
+    self._choked = True
+
+  def unchoke(self):
+    self._choked = False
+
+  def interested(self):
+    self._interested = True
+
+  def uninterested(self):
+    self._interested = False
+
+  def cancel_request(self, piece):
+    self._queue = [pc for pc in self._queue if pc != piece]
+
+
 class Peer(object):
+  class BadMessage(Exception): pass
+
   def __init__(self, address, session, handshake_cb=None):
     self._id = None
     self._address = address
@@ -96,6 +187,11 @@ class Peer(object):
     self._hash = hashlib.sha1(session.torrent.info.raw()).digest()
     self._handshake_cb = handshake_cb or (lambda *x: x)
     self._iostream = None
+    self._bitfield = Bitfield(session.info.pieces)
+
+    # is this the right abstraction?
+    self._in = ConnectionState()
+    self._out = ConnectionState()
 
   @property
   def id(self):
@@ -130,6 +226,78 @@ class Peer(object):
     self._handshake_cb(self, succeeded)
     log.debug('Session [%s] finishing handshake with %s:%s' % (self._session.peer_id,
         self._address[0], self._address[1]))
+
+  @gen.engine
+  def run(self):
+    while True:
+      message_length = struct.unpack('>I', (yield gen.Task(self._iostream.read_bytes, 4)))[0]
+      if message_length == 0:
+        self._in.ping()
+        return
+      message_body = yield gen.Task(self._iostream.read_bytes, message_length)
+      message_id = ord(message_body[0])
+      yield gen.Task(self._dispatch, message_id, message_body[1:])
+
+  @gen.engine
+  def keepalive(self):
+    self._out.ping()
+    yield gen.Task(self._iostream.write, struct.pack('>I', 0))
+
+  @gen.engine
+  def choke(self):
+    self._out.choke()
+    yield gen.Task(self._iostream.write, Command.wire(Command.CHOKE))
+
+  @gen.engine
+  def unchoke(self):
+    self._out.unchoke()
+    yield gen.Task(self._iostream.write, Command.wire(Command.UNCHOKE))
+
+  @gen.engine
+  def interested(self):
+    self._out.interested()
+    yield gen.Task(self._iostream.write, Command.wire(Command.INTERESTED))
+
+  @gen.engine
+  def uninterested(self):
+    self._out.uninterested()
+    yield gen.Task(self._iostream.write, Command.wire(Command.NOT_INTERESTED))
+
+  @gen.engine
+  def request(self, index, begin, length):
+    yield gen.Task(self._iostream.write, Command.wire(Command.REQUEST,
+        Piece(index, begin, length)))
+
+  @gen.engine
+  def send(self, index, begin, length):
+    yield gen.Task(self._iostream.write, Command.wire(Command.PIECE,
+        Piece(index, begin, length, session.fileset.read(index, begin, length))))
+
+  def dispatch(self, message_id, message_body, callback=None):
+    if message_id == Command.CHOKE:
+      self._in.choke()
+    elif message_id == Command.UNCHOKE:
+      self._in.unchoke()
+    elif message_id == Command.INTERESTED:
+      self._in.interested()
+    elif message_id == Command.NOT_INTERESTED:
+      self._in.uninterested()
+    elif message_id == Command.HAVE:
+      self._in.have(struct.unpack('>I', message_body)[0])
+    elif message_id == Command.BITFIELD:
+      self._bitfield.fill(message_body)
+    elif message_id == Command.REQUEST:
+      index, begin, length = struct.unpack('>III', message_body)
+      self._in.queue.append(Piece(index, begin, length))
+    elif message_id == Command.PIECE:
+      index, begin = struct.unpack('>II', message[0:8])
+      self._in.queue.append(Piece(index, begin, len(message[8:]), message[8:]))
+    elif message_id == Command.CANCEL:
+      index, begin, length = struct.unpack('>III', message_body)
+      self._in.cancel_request(Piece(index, begin, length))
+    else:
+      raise Peer.BadMessage('Unknown message id: %s' % message_id)
+    callback()
 
   def disconnect(self):
     if self._iostream:

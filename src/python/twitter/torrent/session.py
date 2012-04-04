@@ -149,7 +149,7 @@ class Session(object):
   SCHEDULE_INTERVAL = Amount(250, Time.MILLISECONDS)
   PEER_RETRY_INTERVAL = Amount(30, Time.SECONDS)
 
-  def __init__(self, torrent, port=None, io_loop=None):
+  def __init__(self, torrent, chroot=None, port=None, io_loop=None):
     self._torrent = torrent
     self._port = port
     self._peers = None     # PeerSet
@@ -162,6 +162,8 @@ class Session(object):
     self._assembled_bytes = 0
     self._schedule_timer = None
     self._schedules = 0
+    self._fileset = Fileset([(mif.name, mif.length) for mif in session.info.files],
+        session.piece_size, chroot)
     self._queue = BitfieldPriorityQueue(self._torrent.info.num_pieces)
 
   # ---- properties
@@ -169,6 +171,10 @@ class Session(object):
   @property
   def port(self):
     return self._port
+
+  @property
+  def fileset(self):
+    return self._fileset
 
   @property
   def peer_id(self):

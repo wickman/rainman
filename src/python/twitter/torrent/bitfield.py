@@ -9,6 +9,17 @@ class Bitfield(object):
     self._array = array.array('B',
       chr(255 if default else 0) * (num_bytes + (1 if leftover_bits else 0)))
 
+  @property
+  def num_bytes(self):
+    return len(self._array)
+
+  def as_bytes(self):
+    return ''.join(map(chr, self._array))
+
+  def fill(self, value):
+    for k in range(len(value)):
+      self._array[k] = value[k]
+
   def __getitem__(self, index):
     if not isinstance(index, int):
       raise TypeError

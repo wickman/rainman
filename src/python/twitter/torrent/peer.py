@@ -35,6 +35,21 @@ class PeerHandshake(object):
     slice(48, 68)   # Peer id
   ]
 
+  @staticmethod
+  def make(info, peer_id=None):
+    """
+      Make a Peer-Peer handshake.  If peer_id is omitted, make only the handshake prefix.
+    """
+    if isinstance(info, MetaInfo):
+      hash = hashlib.sha1(info.raw()).digest()
+    elif isinstance(info, str) and len(str) == 20:
+      hash = info
+    else:
+      raise ValueError('Expected MetaInfo or hash, got %s' % repr(info))
+    handshake = [chr(len(PeerHandshake.PROTOCOL_STR)), PeerHandshake.PROTOCOL_STR,
+                 chr(0) * 8, hash, peer_id if peer_id else '']
+    return ''.join(handshake)
+
   @classmethod
   def error(cls, msg):
     raise cls.InvalidHandshake('Invalid handshake: %s' % msg)
@@ -74,22 +89,6 @@ class PeerHandshake(object):
 
 
 class Peer(object):
-  HANDSHAKE_LENGTH = 68  # 1 byte + 19 bytes + 8 bytes + 20 + 20
-
-  @staticmethod
-  def make_handshake(info, peer_id=None):
-    """
-      Make a Peer-Peer handshake.  If peer_id is omitted, make only the handshake prefix.
-    """
-    if isinstance(info, MetaInfo):
-      hash = hashlib.sha1(info.raw()).digest()
-    elif isinstance(info, str) and len(str) == 20:
-      hash = info
-    else:
-      raise ValueError('Expected MetaInfo or hash, got %s' % repr(info))
-    handshake = [chr(19), 'BitTorrent protocol', chr(0) * 8, hash, peer_id if peer_id else '']
-    return ''.join(handshake)
-
   def __init__(self, address, session, handshake_cb=None):
     self._id = None
     self._address = address
@@ -110,9 +109,8 @@ class Peer(object):
   def handshake(self, iostream):
     log.debug('Session [%s] starting handshake with %s:%s' % (self._session.peer_id,
         self._address[0], self._address[1]))
-    handshake_prefix = Peer.make_handshake(self._session.torrent.info)
-    handshake_full = Peer.make_handshake(self._session.torrent.info, self._session.peer_id)
-    read_handshake, _ = yield [gen.Task(iostream.read_bytes, Peer.HANDSHAKE_LENGTH),
+    handshake_full = PeerHandshake.make(self._session.torrent.info, self._session.peer_id)
+    read_handshake, _ = yield [gen.Task(iostream.read_bytes, PeerHandshake.LENGTH),
                                 gen.Task(iostream.write, handshake_full)]
 
     succeeded = False

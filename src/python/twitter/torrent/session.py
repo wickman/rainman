@@ -311,7 +311,7 @@ class Session(object):
     #     to_enqueue.add((piece, owner))
     #
     # random.shuffle(to_enqueue)
-    # for (piece, owner) in to_enqueue:
+    # for (piece, owner) in to_enqueue:   # increase # of pieces for faster/more responsive
     #    owner.request(piece)
 
 

@@ -1,5 +1,6 @@
 import hashlib
 import random
+import struct
 
 from twitter.common import log
 
@@ -13,6 +14,63 @@ class PeerId(object):
   @classmethod
   def generate(cls):
     return cls.PREFIX + ''.join(random.sample('0123456789abcdef', cls.LENGTH - len(cls.PREFIX)))
+
+
+class PeerHandshake(object):
+  class InvalidHandshake(Exception): pass
+
+  LENGTH = 68
+  PROTOCOL_STR = 'BitTorrent protocol'
+  EXTENSION_BITS = {
+    44: 'Extension protocol',
+    62: 'Fast peers',
+    64: 'DHT',
+  }
+
+  SPANS = [
+    slice( 0,  1),  # First byte = 19
+    slice( 1, 20),  # "BitTorrent protocol"
+    slice(20, 28),  # Reserved bits
+    slice(28, 48),  # Metainfo hash
+    slice(48, 68)   # Peer id
+  ]
+
+  @classmethod
+  def error(cls, msg):
+    raise cls.InvalidHandshake('Invalid handshake: %s' % msg)
+
+  def __init__(self, handshake_bytes):
+    (handshake_byte, protocol_str, self._reserved_bits, self._hash, self._peer_id) = map(
+        handshake_bytes.__getitem__, PeerHandshake.SPANS)
+    if handshake_byte != chr(len(PeerHandshake.PROTOCOL_STR)):
+      self.error('Initial byte of handshake should be 0x%x' % len(PeerHandshake.PROTOCOL_STR))
+    if protocol_str != PeerHandshake.PROTOCOL_STR:
+      self.error('This is not the BitTorrent protocol!')
+    self._reserved_bits = struct.unpack('>Q', self._reserved_bits)[0]
+
+  @property
+  def hash(self):
+    return self._hash
+
+  @property
+  def peer_id(self):
+    return self._peer_id
+
+  @staticmethod
+  def is_set(ull, bit):
+    return bool(ull & (1 << (64 - bit)))
+
+  @property
+  def dht(self):
+    return self.is_set(self.EXTENSION_BITS['DHT'])
+
+  @property
+  def fast_peers(self):
+    return self.is_set(self.EXTENSION_BITS['Fast peers'])
+
+  @property
+  def extended(self):
+    return self.is_set(self.EXTENSION_BITS['Extension protocol'])
 
 
 class Peer(object):
@@ -56,13 +114,22 @@ class Peer(object):
     handshake_full = Peer.make_handshake(self._session.torrent.info, self._session.peer_id)
     read_handshake, _ = yield [gen.Task(iostream.read_bytes, Peer.HANDSHAKE_LENGTH),
                                 gen.Task(iostream.write, handshake_full)]
-    if read_handshake.startswith(handshake_prefix):
-      self._id = read_handshake[-PeerId.LENGTH:]
-      self._iostream = iostream
-      self._handshake_cb(self, True)
-    else:
+
+    succeeded = False
+    try:
+      handshake = PeerHandshake(read_handshake)
+      if handshake.hash == self._hash:
+        self._id = handshake.peer_id
+        self._iostream = iostream
+        succeeded = True
+      else:
+        log.debug('Session [%s] got mismatched torrent hashes.' % self._session.peer_id)
+    except PeerHandshake.InvalidHandshake as e:
+      log.debug('Session [%s] got bad handshake with %s:%s: ' % (self._session.peer_id,
+        self._address[0], self._address[1], e))
       iostream.close()
-      self._handshake_cb(self, False)
+
+    self._handshake_cb(self, succeeded)
     log.debug('Session [%s] finishing handshake with %s:%s' % (self._session.peer_id,
         self._address[0], self._address[1]))
 

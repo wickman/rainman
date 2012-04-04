@@ -117,7 +117,7 @@ class PeerSet(object):
 class PeerListener(TCPServer):
   class BindError(Exception): pass
 
-  PORT_RANGE = range(6181, 6190)
+  PORT_RANGE = range(6881, 6890)
   FILTER_INTERVAL = Amount(1, Time.MINUTES)
 
   def __init__(self, handler, io_loop=None, port=None):
@@ -230,13 +230,16 @@ class Session(object):
       else:
         self._connections[address] = peer
     else:
+      log.debug('Session [%s] failed to negotiate with %s:%s' % (self._peer_id,
+        address[0], address[1]))
       def expire_retry():
         log.debug('Expiring retry timer for %s:%s' % address)
         if address not in self._connections or self._connections[address] is not None:
           log.error('Unexpected connection state for %s!' % address)
         else:
           self._connections.pop(address, None)
-      self._io_loop.add_timeout(self.PEER_RETRY_INTERVAL.as_(Time.MILLISECONDS), expire_retry)
+      self._io_loop.add_timeout(datetime.timedelta(0, self.PEER_RETRY_INTERVAL.as_(Time.SECONDS)),
+          expire_retry)
 
   def schedule(self):
     self._schedules += 1

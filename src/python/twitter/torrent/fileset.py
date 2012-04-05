@@ -1,3 +1,4 @@
+import bisect
 import errno
 import hashlib
 import os
@@ -21,18 +22,17 @@ class FileSlice(object):
   def __init__(self, filename, slyce):
     self._filename = filename
     self._slice = slyce
-    self._length = slyce.stop - slyce.start
-    assert self._length >= 0
+    assert self.length >= 0
 
   @property
   def length(self):
-    return self._length
+    return self._slice.stop - self._slice.start
 
   def read(self):
     with open(self._filename, 'rb') as fp:
       fp.seek(self._slice.start)
-      data = fp.read(self._length)
-      if len(data) != self._length:
+      data = fp.read(self.length)
+      if len(data) != self.length:
         raise FileSlice.ReadError('File is truncated at this slice!')
       return data
 
@@ -45,6 +45,54 @@ class FileSlice(object):
 
   def __repr__(self):
     return 'FileSlice(%r, slice(%r, %r))' % (self._filename, self._slice.start, self._slice.stop)
+
+
+class SliceSet(object):
+  def __init__(self):
+    self._slices = []
+
+  @property
+  def slices(self):
+    return self._slices
+
+  @staticmethod
+  def _contains(slice1, slice2):
+    # slice1 \in slice2
+    return slice1.start >= slice2.start and slice1.stop <= slice2.stop
+
+  @staticmethod
+  def _merge(slice1, slice2):
+    # presuming they intersect
+    return slice(min(slice1.start, slice2.start), max(slice1.stop, slice2.stop))
+
+  # slices are [left, right) file intervals.
+  def add(self, slyce):
+    assert slyce.step is None  # only accept contiguous slices
+
+    # find its spot
+    k = bisect.bisect_left(self._slices, slyce)
+    self._slices.insert(k, slyce)
+
+    # merge any overlapping slices
+    k = max(0, k - 1)
+    while k < len(self._slices) - 1:
+      if self._slices[k].stop < self._slices[k + 1].start:
+        break
+      self._slices[k] = SliceSet._merge(self._slices[k], self._slices.pop(k + 1))
+
+  def __contains__(self, slyce):
+    if isinstance(slyce, int):
+      slyce = slice(slyce, slyce)
+    if not isinstance(slyce, slice):
+      raise ValueError('SliceSet.__contains__ expects an integer or another slice.')
+    k = bisect.bisect_left(self._slices, slyce)
+    def check(index):
+      return index >= 0 and len(self._slices) > index and (
+          SliceSet._contains(slyce, self._slices[index]))
+    return check(k) or check(k-1)
+
+  def __iter__(self):
+    return iter(self._slices)
 
 
 class Fileset(object):

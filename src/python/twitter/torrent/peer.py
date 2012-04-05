@@ -102,7 +102,7 @@ class Command(object):
   @staticmethod
   def wire(command, *args):
     if command in (Command.CHOKE, Command.UNCHOKE, Command.INTERESTED, Command.NOT_INTERESTED):
-      return ''.join([struct.pack('>I', 1), struct.pack('B', command)]
+      return ''.join([struct.pack('>I', 1), struct.pack('B', command)])
     elif command == Command.HAVE:
       assert len(args) == 1
       return ''.join([struct.pack('>I', 5), struct.pack('B', command), struct.pack('>I', args[0])])

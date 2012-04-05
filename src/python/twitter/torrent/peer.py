@@ -235,43 +235,35 @@ class Peer(object):
         return
       message_body = yield gen.Task(self._iostream.read_bytes, message_length)
       message_id = ord(message_body[0])
-      yield gen.Task(self._dispatch, message_id, message_body[1:])
+      self._dispatch(message_id, message_body[1:])
 
-  @gen.engine
   def keepalive(self):
     self._out.ping()
-    yield gen.Task(self._iostream.write, struct.pack('>I', 0))
+    self._iostream.write(struct.pack('>I', 0))
 
-  @gen.engine
   def choke(self):
     self._out.choke()
-    yield gen.Task(self._iostream.write, Command.wire(Command.CHOKE))
+    self._iostream.write(Command.wire(Command.CHOKE))
 
-  @gen.engine
   def unchoke(self):
     self._out.unchoke()
-    yield gen.Task(self._iostream.write, Command.wire(Command.UNCHOKE))
+    self._iostream.write(Command.wire(Command.UNCHOKE))
 
-  @gen.engine
   def interested(self):
     self._out.interested()
-    yield gen.Task(self._iostream.write, Command.wire(Command.INTERESTED))
+    self._iostream.write(Command.wire(Command.INTERESTED))
 
-  @gen.engine
   def uninterested(self):
     self._out.uninterested()
-    yield gen.Task(self._iostream.write, Command.wire(Command.NOT_INTERESTED))
+    self._iostream.write(Command.wire(Command.NOT_INTERESTED))
 
-  @gen.engine
   def request(self, index, begin, length):
-    yield gen.Task(self._iostream.write, Command.wire(Command.REQUEST,
-        Piece(index, begin, length)))
+    self._iostream.write(Command.wire(Command.REQUEST, Piece(index, begin, length)))
 
-  @gen.engine
   def send(self, index, begin, length):
     # timestamp / bandwidth statistic
-    yield gen.Task(self._iostream.write, Command.wire(Command.PIECE,
-        Piece(index, begin, length, session.fileset.read(index, begin, length))))
+    data = self._session.fileset.read(index, begin, length) # session.iopool.read(index, begin, length)
+    self._iostream.write(Command.wire(Command.PIECE, Piece(index, begin, length, data)))
     # timestamp / bandwidth statistic
 
   def dispatch(self, message_id, message_body, callback=None):

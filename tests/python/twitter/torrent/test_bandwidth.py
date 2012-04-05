@@ -7,10 +7,10 @@ from twitter.torrent.bandwidth import Bandwidth
 class TestClock(object):
   def __init__(self, initial=0):
     self._time = initial
-      
+
   def advance(self, ticks):
     self._time += ticks
-            
+
   def time(self):
     return float(self._time)
 

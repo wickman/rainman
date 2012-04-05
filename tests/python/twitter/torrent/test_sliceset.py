@@ -1,6 +1,13 @@
 import pytest
 from twitter.torrent.fileset import SliceSet
 
+
+def make_single(slc):
+  ss = SliceSet()
+  ss.add(slc)
+  return ss
+
+
 def test_empty_sliceset():
   ss = SliceSet()
   for val in (-1, 0, 1, slice(-1, -1), slice(0, 0), slice(1, 1), slice(-1, 1), slice(1,2,3),
@@ -12,8 +19,7 @@ def test_empty_sliceset():
 
 
 def test_simple_sliceset():
-  ss = SliceSet()
-  ss.add(slice(0,5))
+  ss = make_single(slice(0, 5))
   for k in range(5):
     assert k in ss
     assert slice(-1, k) not in ss
@@ -63,7 +69,30 @@ def test_iter():
   assert counted == 50
 
 
-def test_big_missing():
+def test_missing_all_single_cases():
+  # len(range) < len(slice):
+  rr = make_single(slice(6,10))
+  mi = lambda sl: list(rr.missing_in(sl))
+  assert mi(slice(0,5)) == [slice(0,5)]
+  assert mi(slice(1,6)) == [slice(1,6)]
+  assert mi(slice(5,10)) == [slice(5,6)]
+  assert mi(slice(6,11)) == [slice(10,11)]
+  assert mi(slice(10,15)) == [slice(10,15)]
+  assert mi(slice(11,16)) == [slice(11,16)]
+
+  # len(range) == len(slice)
+  assert mi(slice(2,5)) == [slice(2,5)]
+  assert mi(slice(4,7)) == [slice(4,6)]
+  assert mi(slice(6,9)) == []
+  assert mi(slice(7,10)) == []
+  assert mi(slice(8,11)) == [slice(10,11)]
+  assert mi(slice(11,14)) == [slice(11,14)]
+
+  # len(range) > len(slice)
+  assert mi(slice(5,11)) == [slice(5,6), slice(10,11)]
+
+
+def test_many_missing():
   ss = SliceSet()
   for k in range(0, 20, 2):
     ss.add(slice(k, k + 1))
@@ -71,35 +100,36 @@ def test_big_missing():
     slice(11, 12), slice(13, 14), slice(15, 16), slice(17, 18), slice(19, 30)]
 
 
+def test_missing_full_with_omission():
+  mi = lambda sl: list(ss.missing_in(sl))
 
-def test_missing():
   ss = SliceSet()
-  assert list(ss.missing_in(slice(0, 100))) == [slice(0, 100)]
+  assert mi(slice(0, 100)) == [slice(0, 100)]
 
   ss = SliceSet()
   ss.add(slice(20, 40))
-
-  assert list(ss.missing_in(slice(0, 19))) == [slice(0, 19)]
-  assert list(ss.missing_in(slice(0, 20))) == [slice(0, 20)]
-  assert list(ss.missing_in(slice(0, 21))) == [slice(0, 20)]
-  assert list(ss.missing_in(slice(40, 60))) == [slice(40, 60)]
-  assert list(ss.missing_in(slice(39, 60))) == [slice(40, 60)]
-  assert list(ss.missing_in(slice(41, 60))) == [slice(41, 60)]
-  assert list(ss.missing_in(slice(20, 40))) == []
-  assert list(ss.missing_in(slice(20, 41))) == [slice(40, 41)]
-  assert list(ss.missing_in(slice(0, 60))) == [slice(0, 20), slice(40, 60)]
+  assert mi(slice(0, 19)) == [slice(0, 19)]
+  assert mi(slice(0, 20)) == [slice(0, 20)]
+  assert mi(slice(0, 21)) == [slice(0, 20)]
+  assert mi(slice(40, 60)) == [slice(40, 60)]
+  assert mi(slice(39, 60)) == [slice(40, 60)]
+  assert mi(slice(41, 60)) == [slice(41, 60)]
+  assert mi(slice(20, 40)) == []
+  assert mi(slice(20, 41)) == [slice(40, 41)]
+  assert mi(slice(0, 60)) == [slice(0, 20), slice(40, 60)]
 
   ss = SliceSet()
   ss.add(slice(20, 29))
   ss.add(slice(31, 40))
+  assert mi(slice(0, 19)) == [slice(0, 19)]
+  assert mi(slice(0, 20)) == [slice(0, 20)]
+  assert mi(slice(0, 21)) == [slice(0, 20)]
+  assert mi(slice(19, 30)) == [slice(19, 20), slice(29, 30)]
+  assert mi(slice(40, 60)) == [slice(40, 60)]
+  assert mi(slice(39, 60)) == [slice(40, 60)]
+  assert mi(slice(41, 60)) == [slice(41, 60)]
+  assert mi(slice(20, 40)) == [slice(29,31)]
+  assert mi(slice(20, 41)) == [slice(29,31), slice(40, 41)]
+  assert mi(slice(0, 60)) == [slice(0, 20), slice(29,31), slice(40, 60)]
 
-  assert list(ss.missing_in(slice(0, 19))) == [slice(0, 19)]
-  assert list(ss.missing_in(slice(0, 20))) == [slice(0, 20)]
-  assert list(ss.missing_in(slice(0, 21))) == [slice(0, 20)]
-  assert list(ss.missing_in(slice(19, 30))) == [slice(19, 20), slice(29, 30)]
-  assert list(ss.missing_in(slice(40, 60))) == [slice(40, 60)]
-  assert list(ss.missing_in(slice(39, 60))) == [slice(40, 60)]
-  assert list(ss.missing_in(slice(41, 60))) == [slice(41, 60)]
-  assert list(ss.missing_in(slice(20, 40))) == [slice(29,31)]
-  assert list(ss.missing_in(slice(20, 41))) == [slice(29,31), slice(40, 41)]
-  assert list(ss.missing_in(slice(0, 60))) == [slice(0, 20), slice(29,31), slice(40, 60)]
+

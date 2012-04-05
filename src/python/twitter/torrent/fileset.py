@@ -77,9 +77,15 @@ class SliceSet(object):
     # presuming they intersect
     return slice(min(slice1.start, slice2.start), max(slice1.stop, slice2.stop))
 
+  @staticmethod
+  def assert_valid_slice(slyce):
+    assert slyce.step is None         # only accept contiguous slices
+    assert slyce.stop >= slyce.start  # only accept ascending slices
+                                      # consider accepting open intervals?
+
   # slices are [left, right) file intervals.
   def add(self, slyce):
-    assert slyce.step is None  # only accept contiguous slices
+    SliceSet.assert_valid_slice(slyce)
 
     # find its spot
     k = bisect_left(self._slices, slyce)
@@ -94,6 +100,8 @@ class SliceSet(object):
       self._slices[k] = SliceSet._merge(self._slices[k], self._slices.pop(k + 1))
 
   def missing_in(self, slyce):
+    SliceSet.assert_valid_slice(slyce)
+
     def top_iter():
       if len(self._slices) == 0:
         yield slyce

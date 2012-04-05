@@ -7,6 +7,16 @@ import tempfile
 
 from twitter.common.dirutil import safe_mkdir, safe_rmtree
 
+"""
+__all__ = (
+  'Fileslice',
+  'Fileset',
+  'Sliceset'
+)
+"""
+
+# Cribbed directly from the bisect module, but allowing support for
+# bisecting off the left or right key of the interval.
 def bisect_left(a, x, start=True, lo=0, hi=None):
   if lo < 0:
     raise ValueError('lo must be non-negative')

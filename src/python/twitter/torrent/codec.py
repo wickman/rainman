@@ -1,6 +1,18 @@
 from twitter.common import log
 from twitter.common.lang import Compatibility
 
+"""
+Encode and decode bencoded data structures.
+
+To use:
+  from .codec import BEncoder, BDecoder
+  byte_array = BEncoder.encode({'any': {'data': ['structure', 'that'], 'can': 1},
+                                'be': ['expressed'],
+                                'as': 'bencoded',
+                                'form': 23})
+  dictionary = BDecoder.decode(byte_array)
+"""
+
 class BEncoder(object):
   class Error(Exception): pass
 

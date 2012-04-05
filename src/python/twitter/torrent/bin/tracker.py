@@ -1,17 +1,11 @@
 from collections import defaultdict
 import time
 
-try:
-  from twitter.common import app, log
-  from twitter.common.app.modules.http import RootServer
-  _HAS_APP = True
-except ImportError:
-  _HAS_APP = False
-
+from twitter.common import app, log
+from twitter.common.app.modules.http import RootServer
 from twitter.common.http import HttpServer
 from twitter.common.quantity import Amount, Time
-
-from .codec import BEncoder
+from twitter.torrent.codec import BEncoder
 
 class TrackerRequest(object):
   class MalformedRequestError(Exception): pass
@@ -144,8 +138,5 @@ def main(args, options):
   while True:
     time.sleep(10)
 
-
-if _HAS_APP:
-  app.configure(module='twitter.common.app.modules.http', enable=True, framework='tornado')
-  app.main()
-
+app.configure(module='twitter.common.app.modules.http', enable=True, framework='tornado')
+app.main()

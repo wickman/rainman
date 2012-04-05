@@ -7,13 +7,12 @@ import tempfile
 
 from twitter.common.dirutil import safe_mkdir, safe_rmtree
 
-"""
 __all__ = (
-  'Fileslice',
-  'Fileset',
-  'Sliceset'
+  'fileslice',
+  'FileSet',
+  'SliceSet'
 )
-"""
+
 
 # Cribbed directly from the bisect module, but allowing support for
 # bisecting off the left or right key of the interval.
@@ -30,43 +29,57 @@ def bisect_left(a, x, start=True, lo=0, hi=None):
       hi = mid
   return lo
 
+
 # TODO(wickman) Do LRU filehandle caching here, since repeated open/close is going to be
 # costly.
-class FileSlice(object):
+class fileslice(object):
   """
-    Represents a slice of a file.  Requires the contents of the file at the
-    slice exist.
+    file-annotated slice with read/write methods.
+    unfortunately slice is not subclassable, so we just duck-type as much as possible.
   """
   class Error(Exception): pass
   class ReadError(Error): pass
   class WriteError(Error): pass
 
-  def __init__(self, filename, slyce):
+  def __init__(self, filename, slice_):
     self._filename = filename
-    self._slice = slyce
+    self._slice = slice_
     assert self.length >= 0
 
   @property
   def length(self):
-    return self._slice.stop - self._slice.start
+    return self.stop - self.start
+
+  @property
+  def start(self):
+    return self._slice.start
+
+  @property
+  def stop(self):
+    return self._slice.stop
+
+  # Force fileslice objects to be contiguous
+  @property
+  def step(self):
+    return None
 
   def read(self):
     with open(self._filename, 'rb') as fp:
-      fp.seek(self._slice.start)
+      fp.seek(self.start)
       data = fp.read(self.length)
       if len(data) != self.length:
-        raise FileSlice.ReadError('File is truncated at this slice!')
+        raise fileslice.ReadError('File is truncated at this slice!')
       return data
 
   def write(self, data):
-    if len(data) != (self._slice.stop - self._slice.start):
-      raise FileSlice.WriteError('Block must be of appropriate size!')
+    if len(data) != (self.stop - self.start):
+      raise fileslice.WriteError('Block must be of appropriate size!')
     with open(self._filename, 'r+b') as fp:
-      fp.seek(self._slice.start)
+      fp.seek(self.start)
       fp.write(data)
 
   def __repr__(self):
-    return 'FileSlice(%r, slice(%r, %r))' % (self._filename, self._slice.start, self._slice.stop)
+    return 'fileslice(%r[%r,%r])' % (self._filename, self.start, self.stop)
 
 
 class SliceSet(object):
@@ -88,36 +101,36 @@ class SliceSet(object):
     return slice(min(slice1.start, slice2.start), max(slice1.stop, slice2.stop))
 
   @staticmethod
-  def assert_valid_slice(slyce):
-    assert slyce.step is None         # only accept contiguous slices
-    assert slyce.stop >= slyce.start  # only accept ascending slices
+  def assert_valid_slice(slice_):
+    assert slice_.step is None         # only accept contiguous slices
+    assert slice_.stop >= slice_.start  # only accept ascending slices
                                       # consider accepting open intervals?
 
   # slices are [left, right) file intervals.
-  def add(self, slyce):
-    SliceSet.assert_valid_slice(slyce)
+  def add(self, slice_):
+    SliceSet.assert_valid_slice(slice_)
 
     # find its spot
-    k = bisect_left(self._slices, slyce)
-    self._slices.insert(k, slyce)
+    k = bisect_left(self._slices, slice_)
+    self._slices.insert(k, slice_)
 
     # merge any overlapping slices
-    if k > 0 and self._slices[k-1].stop == slyce.start:
+    if k > 0 and self._slices[k-1].stop == slice_.start:
       k = k - 1
     while k < len(self._slices) - 1:
       if self._slices[k].stop < self._slices[k + 1].start:
         break
       self._slices[k] = SliceSet._merge(self._slices[k], self._slices.pop(k + 1))
 
-  def missing_in(self, slyce):
-    SliceSet.assert_valid_slice(slyce)
+  def missing_in(self, slice_):
+    SliceSet.assert_valid_slice(slice_)
 
     def top_iter():
       if len(self._slices) == 0:
-        yield slyce
+        yield slice_
         return
-      L = max(0, bisect_left(self._slices, slyce) - 1)
-      R = bisect_left(self._slices, slyce, start=False)
+      L = max(0, bisect_left(self._slices, slice_) - 1)
+      R = bisect_left(self._slices, slice_, start=False)
       yield slice(-sys.maxint,
                   self._slices[L].start)
       while L <= R and (L + 1) < len(self._slices):
@@ -126,26 +139,26 @@ class SliceSet(object):
       yield slice(self._slices[max(L, len(self._slices)-1)].stop,
                   sys.maxint if (L+1) >= len(self._slices) else self._slices[L+1].start)
     for element in top_iter():
-      isect = slice(max(slyce.start, element.start), min(slyce.stop, element.stop))
+      isect = slice(max(slice_.start, element.start), min(slice_.stop, element.stop))
       if isect.stop > isect.start:
         yield isect
 
-  def __contains__(self, slyce):
-    if isinstance(slyce, int):
-      slyce = slice(slyce, slyce)
-    if not isinstance(slyce, slice):
+  def __contains__(self, slice_):
+    if isinstance(slice_, int):
+      slice_ = slice(slice_, slice_)
+    if not isinstance(slice_, slice):
       raise ValueError('SliceSet.__contains__ expects an integer or another slice.')
-    k = bisect_left(self._slices, slyce)
+    k = bisect_left(self._slices, slice_)
     def check(index):
       return index >= 0 and len(self._slices) > index and (
-          SliceSet._contains(slyce, self._slices[index]))
+          SliceSet._contains(slice_, self._slices[index]))
     return check(k) or check(k-1)
 
   def __iter__(self):
     return iter(self._slices)
 
 
-class Fileset(object):
+class FileSet(object):
   def __init__(self, files, piece_size, chroot=None):
     """
       files: ordered list of (filename, filesize) pairs
@@ -174,6 +187,7 @@ class Fileset(object):
     self._pieces = ''
     self._piece_size = piece_size
     self._initialized = False
+    self._sliceset = SliceSet()
     self._splat = chr(0) * piece_size
     self.initialize()
 
@@ -188,7 +202,7 @@ class Fileset(object):
         raise
 
   def fill(self, filename, size):
-    current_size = Fileset.safe_size(filename)
+    current_size = self.safe_size(filename)
     assert current_size <= size
     if current_size != size:
       diff = size - current_size
@@ -243,7 +257,7 @@ class Fileset(object):
   # this seems to be slow for huge torrents.
   def iter_slices(self, index, begin, length):
     """
-      Given (piece index, begin, length), return an iterator over FileSlice objects
+      Given (piece index, begin, length), return an iterator over fileslice objects
       that cover the interval.
     """
     piece = slice(index * self._piece_size + begin,
@@ -258,7 +272,7 @@ class Fileset(object):
       file = slice(offset, offset + fs)
       overlap = slice(max(file.start, piece.start), min(file.stop, piece.stop))
       if overlap.start < overlap.stop:
-        yield FileSlice(os.path.join(self._chroot, fn),
+        yield fileslice(os.path.join(self._chroot, fn),
                         slice(overlap.start - offset, overlap.stop - offset))
       offset += fs
 

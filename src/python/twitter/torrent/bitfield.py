@@ -3,6 +3,8 @@ import random
 
 
 class Bitfield(object):
+  """Naive implementation of a vector of booleans with __getitem__ and __setitem__."""
+
   def __init__(self, length, default=False):
     self._length = length
     num_bytes, leftover_bits = divmod(length, 8)
@@ -14,9 +16,11 @@ class Bitfield(object):
     return len(self._array)
 
   def as_bytes(self):
+    """Returns the bitfield in byte array form."""
     return ''.join(map(chr, self._array))
 
   def fill(self, value):
+    """Fill the bitfield from a byte array."""
     for k in range(len(value)):
       self._array[k] = value[k]
 
@@ -44,5 +48,3 @@ class Bitfield(object):
 
   def __len__(self):
     return self._length
-
-

@@ -1,19 +1,25 @@
 python_test_suite(name = 'torrent',
   dependencies = [
-    pants(':test_codec'),
+    pants(':test_bandwidth'),
     pants(':test_bitfield'),
+    pants(':test_codec'),
     pants(':test_fileset'),
     pants(':test_sliceset')
   ]
 )
 
-python_tests(name = 'test_codec',
-  sources = ['test_codec.py'],
+python_tests(name = 'test_bandwidth',
+  sources = ['test_bandwidth.py'],
   dependencies = [pants('src/python/twitter/torrent')]
 )
 
 python_tests(name = 'test_bitfield',
   sources = ['test_bitfield.py'],
+  dependencies = [pants('src/python/twitter/torrent')]
+)
+
+python_tests(name = 'test_codec',
+  sources = ['test_codec.py'],
   dependencies = [pants('src/python/twitter/torrent')]
 )
 

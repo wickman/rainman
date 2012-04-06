@@ -133,3 +133,39 @@ def test_missing_full_with_omission():
   assert mi(slice(0, 60)) == [slice(0, 20), slice(29,31), slice(40, 60)]
 
 
+
+def test_erase():
+  ss = make_single(slice(0,100))
+  ss.erase(slice(20,40))
+  assert ss.slices == [slice(0,20), slice(40,100)]
+  ss.erase(slice(30,50))
+  assert ss.slices == [slice(0,20), slice(50,100)]
+  ss.erase(slice(51,100))
+  assert ss.slices == [slice(0,20), slice(50,51)]
+
+  ss = make_single(slice(0,100))
+  number = 1
+  for k in range(1,99,2):
+    ss.erase(slice(k,k+1))
+    number += 1
+    assert len(ss.slices) == number
+  
+  
+  ss = make_single(slice(0,100))
+  ss.erase(slice(0,100))
+  assert ss.slices == []
+  ss = make_single(slice(0,100))
+  ss.erase(slice(-1,100))
+  assert ss.slices == []
+  ss = make_single(slice(0,100))
+  ss.erase(slice(0,101))
+  assert ss.slices == []
+
+
+  ss = make_single(slice(0,100))
+  ss.erase(slice(-50,50))
+  assert ss.slices == [slice(50,100)]  
+  
+  ss = make_single(slice(0,100))
+  ss.erase(slice(50,150))
+  assert ss.slices == [slice(0,50)]  

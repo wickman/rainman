@@ -1,3 +1,5 @@
+import sys
+
 __all__ = ('SliceSet',)
 
 
@@ -37,12 +39,14 @@ class SliceSet(object):
 
   @staticmethod
   def assert_valid_slice(slice_):
-    assert slice_.step is None         # only accept contiguous slices
+    assert slice_.step is None          # only accept contiguous slices
     assert slice_.stop >= slice_.start  # only accept ascending slices
-                                      # consider accepting open intervals?
+                                        # consider accepting open intervals?
 
   # slices are [left, right) file intervals.
   def add(self, slice_):
+    print 'Adding %s to %s' % (slice_, self.slices)
+
     SliceSet.assert_valid_slice(slice_)
 
     # find its spot
@@ -57,6 +61,22 @@ class SliceSet(object):
         break
       self._slices[k] = SliceSet._merge(self._slices[k], self._slices.pop(k + 1))
 
+  def erase(self, slice_):
+    print 'Erasing %s from %s' % (slice_, self.slices)
+    if len(self._slices) == 0:
+      return
+    L = max(0, bisect_left(self._slices, slice_) - 1)
+    if self._slices[L].start <= slice_.start < self._slices[L].stop:
+      tr = slice(self._slices[L].start, slice_.start)
+      if tr.stop - tr.start > 0:
+        self._slices.insert(L, slice(self._slices[L].start, slice_.start))
+    while self._slices[L].stop <= slice_.start:
+      L += 1
+    while L < len(self._slices) and slice_.stop >= self._slices[L].stop:
+      self._slices.pop(L)
+    if L < len(self._slices) and slice_.stop > self._slices[L].start:
+      self._slices[L] = slice(slice_.stop, self._slices[L].stop)
+
   def missing_in(self, slice_):
     SliceSet.assert_valid_slice(slice_)
 
@@ -66,8 +86,7 @@ class SliceSet(object):
         return
       L = max(0, bisect_left(self._slices, slice_) - 1)
       R = bisect_left(self._slices, slice_, start=False)
-      yield slice(-sys.maxint,
-                  self._slices[L].start)
+      yield slice(-sys.maxint, self._slices[L].start)
       while L <= R and (L + 1) < len(self._slices):
         yield slice(self._slices[L].stop, self._slices[L+1].start)
         L += 1

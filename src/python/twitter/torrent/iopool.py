@@ -27,13 +27,13 @@ class IOPool(object):
     def __init__(self, inqueue, io_loop):
       self._inqueue = inqueue
       self._io_loop = io_loop
-      self._stop = threading.Event()
+      self._stop_event = threading.Event()
       threading.Thread.__init__(self)
       self.daemon = True
       self.start()
 
     def run(self):
-      while not self._stop.is_set():
+      while not self._stop_event.is_set():
         try:
           callable, callback = self._inqueue.get(timeout=IOPool.MAXIMUM_WAIT.as_(Time.SECONDS))
         except QueueEmpty:
@@ -43,7 +43,7 @@ class IOPool(object):
         self._inqueue.task_done()
 
     def stop(self):
-      self._stop.set()
+      self._stop_event.set()
 
   def __init__(self, io_loop=None, workers=DEFAULT_WORKERS):
     self._in_queue = Queue()

@@ -187,11 +187,12 @@ class Session(object):
     self._connections = {} # address => Peer
     self._peer_id = None
     self._io_loop = io_loop or tornado.ioloop.IOLoop()  # singleton by default instead?
-    self._uploaded_bytes = 0
-    self._downloaded_bytes = 0
-    self._assembled_bytes = 0
+    self._uploaded_bytes = 0    # switch these over to calculate-on-demand
+    self._downloaded_bytes = 0  #
+    self._assembled_bytes = 0   #
     self._schedule_timer = None
     self._schedules = 0
+    self._chroot = chroot or tempfile.mkdtemp()
     self._fileset = Fileset([(mif.name, mif.length) for mif in session.info.files],
         session.piece_size, chroot)
     self._pieces = PieceSet(self._torrent.info.num_pieces)

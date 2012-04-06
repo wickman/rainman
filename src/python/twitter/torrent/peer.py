@@ -3,9 +3,11 @@ import random
 import struct
 
 from twitter.common import log
+from twitter.common.quantity import Time, Amount
 
 from tornado import gen
 from .metainfo import MetaInfo
+from .bandwidth import Bandwidth
 
 
 class PeerId(object):
@@ -148,11 +150,15 @@ class Piece(object):
 
 
 class ConnectionState(object):
+  BW_COLLECTION_INTERVAL = Amount(30, Time.SECONDS)
+  
   def __init__(self):
     self._last_alive = time.time()
     self._interested = False
     self._choked = True
     self._queue = []
+    self._sent = 0
+    self._bandwidth = Bandwidth(window=ConnectionState.BW_COLLECTION_INTERVAL.as_(Time.SECONDS))
 
   @property
   def queue(self):
@@ -175,6 +181,10 @@ class ConnectionState(object):
 
   def cancel_request(self, piece):
     self._queue = [pc for pc in self._queue if pc != piece]
+  
+  def sent(self, num_bytes):
+    self._sent += num_bytes
+    self._bandwidth.sample(num_bytes)
 
 
 class Peer(object):
@@ -260,10 +270,14 @@ class Peer(object):
   def request(self, index, begin, length):
     self._iostream.write(Command.wire(Command.REQUEST, Piece(index, begin, length)))
 
+  @gen.engine
   def send(self, index, begin, length):
     # timestamp / bandwidth statistic
+    # XXX
+    data = yield gen.Task(self._session.fileset.read_async, index, begin, length)
     data = self._session.fileset.read(index, begin, length) # session.iopool.read(index, begin, length)
     self._iostream.write(Command.wire(Command.PIECE, Piece(index, begin, length, data)))
+    self._out.sent(length)
     # timestamp / bandwidth statistic
 
   def dispatch(self, message_id, message_body, callback=None):

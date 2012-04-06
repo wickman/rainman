@@ -4,6 +4,7 @@ python_test_suite(name = 'torrent',
     pants(':test_bitfield'),
     pants(':test_codec'),
     pants(':test_fileset'),
+    pants(':test_iopool'),
     pants(':test_sliceset')
   ]
 )
@@ -25,6 +26,11 @@ python_tests(name = 'test_codec',
 
 python_tests(name = 'test_fileset',
   sources = ['test_fileset.py'],
+  dependencies = [pants('src/python/twitter/torrent')]
+)
+
+python_tests(name = 'test_iopool',
+  sources = ['test_iopool.py'],
   dependencies = [pants('src/python/twitter/torrent')]
 )
 

@@ -151,7 +151,7 @@ class Piece(object):
 
 class ConnectionState(object):
   BW_COLLECTION_INTERVAL = Amount(30, Time.SECONDS)
-  
+
   def __init__(self):
     self._last_alive = time.time()
     self._interested = False
@@ -181,7 +181,7 @@ class ConnectionState(object):
 
   def cancel_request(self, piece):
     self._queue = [pc for pc in self._queue if pc != piece]
-  
+
   def sent(self, num_bytes):
     self._sent += num_bytes
     self._bandwidth.sample(num_bytes)

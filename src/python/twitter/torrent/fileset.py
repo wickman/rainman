@@ -115,7 +115,7 @@ class FileSet(object):
   @property
   def size(self):
     return self._size
-  
+
   @property
   def piece_size(self):
     return self._piece_size
@@ -156,10 +156,10 @@ class FileSet(object):
 class NullCallbackDispatcher(object):
   def __init__(self, callback=None):
     self._callback = callback
-  
+
   def __enter__(self):
     pass
-  
+
   def __exit__(self, type, value, traceback):
     if self._callback:
       self._callback()
@@ -189,7 +189,7 @@ class FileManager(object):
     self._initialize()
 
   #  --- piece initialization
-  
+
   @staticmethod
   def safe_size(filename):
     try:
@@ -243,7 +243,7 @@ class FileManager(object):
     for index in range(self._fileset.num_pieces):
       if self._actual_pieces[index] == self._pieces[index]:
         self._sliceset.add(self._to_slice(index, 0, self._fileset.piece_size))
-  
+
   # ---- helpers
 
   def to_slice(self, index, begin, length):
@@ -281,10 +281,12 @@ class FileManager(object):
       offset += fs
 
   def iter_hashes(self):
+    """iterate over the sha1 hashes, blocking."""
     for chunk in self.iter_pieces():
       yield hashlib.sha1(chunk).digest()
 
   def iter_pieces(self):
+    """iterate over the pieces backed by this fileset.  blocking."""
     # TODO(wickman)  Port this over to use the fileslice interface.
     chunk = ''
     for fn, _ in self._fileset:

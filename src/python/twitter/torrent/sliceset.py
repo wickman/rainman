@@ -46,7 +46,6 @@ class SliceSet(object):
   # slices are [left, right) file intervals.
   def add(self, slice_):
     print 'Adding %s to %s' % (slice_, self.slices)
-
     SliceSet.assert_valid_slice(slice_)
 
     # find its spot

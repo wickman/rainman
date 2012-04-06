@@ -5,7 +5,7 @@ import random
 import struct
 import tempfile
 
-from twitter.torrent.fileset import FileSet
+from twitter.torrent.fileset import FileManager, FileSet
 
 
 def test_bad_input():
@@ -22,7 +22,7 @@ def test_bad_input():
 
 
 def test_empty_input():
-  fs = FileSet((), 1)
+  fs = FileManager(FileSet((), 1))
   chunks = list(fs.iter_pieces())
   hashes = list(fs.iter_hashes())
   try:
@@ -43,7 +43,7 @@ def test_single():
   ]
 
   for pair in pairs:
-    fs = FileSet([('hello_world', pair[0])], pair[1])
+    fs = FileManager(FileSet([('hello_world', pair[0])], pair[1]))
     chunks = list(fs.iter_pieces())
     hashes = list(fs.iter_hashes())
 
@@ -88,9 +88,10 @@ def test_many():
     for k in range(6):
       fp.write(deadbeef)
 
-  fs1 = FileSet([('one.txt', 4), ('two.txt', 8), ('three.txt', 12)], piece_size=13, chroot=d1)
-  fs2 = FileSet([('two.txt', 8), ('four.txt', 16)], piece_size=13, chroot=d2)
-  fs3 = FileSet([('six.txt', 24)], piece_size=13, chroot=d3)
+  fs1 = FileManager(FileSet([('one.txt', 4), ('two.txt', 8), ('three.txt', 12)], piece_size=13),
+                    chroot=d1)
+  fs2 = FileManager(FileSet([('two.txt', 8), ('four.txt', 16)], piece_size=13), chroot=d2)
+  fs3 = FileManager(FileSet([('six.txt', 24)], piece_size=13), chroot=d3)
 
   try:
     assert list(fs1.iter_pieces()) == list(fs2.iter_pieces())

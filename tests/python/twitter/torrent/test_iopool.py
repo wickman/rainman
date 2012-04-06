@@ -31,18 +31,18 @@ class TestFileIOPool(AsyncTestCase):
 
     assert len(read_data) == 1 and len(read_data[0]) == all_files_size
     assert read_data[0] == chr(0) * all_files_size  # by default filesets are zeroed out
-    
+
     # write
     pc = Piece(2, 0, 5000, block=chr(1)*5000)
     def write_done():
       self.stop()
     fm.write(pc, write_done)
     self.wait()
-    
+
     read_data = []
     fm.read(Piece(0, 0, all_files_size), read_done)
     self.wait()
-    
+
     assert len(read_data) == 1 and len(read_data[0]) == all_files_size
     assert read_data == [
         chr(0) * 2 * 4096 + chr(1) * 5000 + chr(0) * (all_files_size - 2 * 4096 - 5000)]

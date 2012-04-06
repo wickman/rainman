@@ -149,8 +149,8 @@ def test_erase():
     ss.erase(slice(k,k+1))
     number += 1
     assert len(ss.slices) == number
-  
-  
+
+
   ss = make_single(slice(0,100))
   ss.erase(slice(0,100))
   assert ss.slices == []
@@ -164,8 +164,8 @@ def test_erase():
 
   ss = make_single(slice(0,100))
   ss.erase(slice(-50,50))
-  assert ss.slices == [slice(50,100)]  
-  
+  assert ss.slices == [slice(50,100)]
+
   ss = make_single(slice(0,100))
   ss.erase(slice(50,150))
-  assert ss.slices == [slice(0,50)]  
+  assert ss.slices == [slice(0,50)]

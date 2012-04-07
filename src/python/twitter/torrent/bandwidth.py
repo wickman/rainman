@@ -25,7 +25,6 @@ class Bandwidth(object):
 
   def _filter(self, now=None):
     now = now or self._clock.time()
-    print 'now: %s, samples: %s' % (now, self._samples)
     while len(self._samples) > 0 and now - self._samples[0][Bandwidth.TIME] >= self._window:
       evict = self._samples.popleft()
       self._aggregate -= evict[Bandwidth.VALUE]

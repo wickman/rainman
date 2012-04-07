@@ -45,7 +45,6 @@ class SliceSet(object):
 
   # slices are [left, right) file intervals.
   def add(self, slice_):
-    print 'Adding %s to %s' % (slice_, self.slices)
     SliceSet.assert_valid_slice(slice_)
 
     # find its spot
@@ -61,7 +60,6 @@ class SliceSet(object):
       self._slices[k] = SliceSet._merge(self._slices[k], self._slices.pop(k + 1))
 
   def erase(self, slice_):
-    print 'Erasing %s from %s' % (slice_, self.slices)
     if len(self._slices) == 0:
       return
     L = max(0, bisect_left(self._slices, slice_) - 1)

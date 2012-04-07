@@ -1,6 +1,7 @@
 import hashlib
 import random
 import struct
+import time
 
 from twitter.common import log
 from twitter.common.quantity import Time, Amount
@@ -158,33 +159,48 @@ class ConnectionState(object):
     self._choked = True
     self._queue = []
     self._sent = 0
-    self._bandwidth = Bandwidth(window=ConnectionState.BW_COLLECTION_INTERVAL.as_(Time.SECONDS))
+    self._bandwidth = Bandwidth(window=ConnectionState.BW_COLLECTION_INTERVAL)
 
   @property
   def queue(self):
     return self._queue
 
+  def updates_keepalive(fn):
+    def wrapper(self, *args, **kw):
+      self._last_alive = time.time()
+      return fn(self, *args, **kw)
+    return wrapper
+    
+  @updates_keepalive
   def ping(self):
-    self._last_alive = time.time()
+    pass
 
+  @updates_keepalive
   def choke(self):
     self._choked = True
 
+  @updates_keepalive
   def unchoke(self):
     self._choked = False
 
+  @updates_keepalive
   def interested(self):
     self._interested = True
 
+  @updates_keepalive
   def uninterested(self):
     self._interested = False
 
+  @updates_keepalive
   def cancel_request(self, piece):
     self._queue = [pc for pc in self._queue if pc != piece]
 
+  @updates_keepalive
   def sent(self, num_bytes):
     self._sent += num_bytes
     self._bandwidth.sample(num_bytes)
+
+  del updates_keepalive
 
 
 class Peer(object):
@@ -198,9 +214,18 @@ class Peer(object):
     self._hash = hashlib.sha1(session.torrent.info.raw()).digest()
     self._handshake_cb = handshake_cb or (lambda *x: x)
     self._iostream = None
+    self._outstanding_requests = 0
     self._bitfield = Bitfield(session.info.pieces)
     self._in = ConnectionState()
     self._out = ConnectionState()
+
+  @property
+  def egress_bytes(self):
+    return self._out._sent
+  
+  @property
+  def ingress_bytes(self):
+    return self._in._sent
 
   @property
   def id(self):
@@ -247,10 +272,6 @@ class Peer(object):
       message_id = ord(message_body[0])
       self._dispatch(message_id, message_body[1:])
 
-  def keepalive(self):
-    self._out.ping()
-    self._iostream.write(struct.pack('>I', 0))
-
   def choke(self):
     self._out.choke()
     self._iostream.write(Command.wire(Command.CHOKE))
@@ -267,19 +288,31 @@ class Peer(object):
     self._out.uninterested()
     self._iostream.write(Command.wire(Command.NOT_INTERESTED))
 
-  def request(self, index, begin, length):
-    self._iostream.write(Command.wire(Command.REQUEST, Piece(index, begin, length)))
+  def send_keepalive(self):
+    self._out.ping()
+    self._iostream.write(struct.pack('>I', 0))
+
+  def send_have(self, index):
+    self._iostream.write(Command.wire(Command.HAVE, index))
+  
+  def send_bitfield(self, bitfield):
+    self._iostream.write(Command.wire(Command.BITFIELD, bitfield))
+
+  def send_request(self, index, begin, length):
+    def completed():
+      self._outstanding_requests += 1
+    self._iostream.write(Command.wire(Command.REQUEST, Piece(index, begin, length)),
+      callback=decrement)
 
   @gen.engine
-  def send(self, index, begin, length):
-    # timestamp / bandwidth statistic
-    # XXX
-    data = yield gen.Task(self._session.fileset.read_async, index, begin, length)
-    data = self._session.fileset.read(index, begin, length) # session.iopool.read(index, begin, length)
-    self._iostream.write(Command.wire(Command.PIECE, Piece(index, begin, length, data)))
+  def send(self, index, begin, length, callback=None):
+    piece = Piece(index, begin, length)
+    piece.block = yield gen.Task(self._session.filemanager.read, piece)
+    yield gen.Task(self._iostream.write, Command.wire(Command.PIECE, piece))
     self._out.sent(length)
-    # timestamp / bandwidth statistic
+    if callback: callback()
 
+  @gen.engine
   def dispatch(self, message_id, message_body, callback=None):
     if message_id == Command.CHOKE:
       self._in.choke()
@@ -299,12 +332,14 @@ class Peer(object):
       self._session.pieces.add(self._bitfield)
     elif message_id == Command.REQUEST:
       index, begin, length = struct.unpack('>III', message_body)
-      self._in.queue.append(Piece(index, begin, length))
+      piece = Piece(index, begin, length)
+      if piece in self._session.filemanager:
+        yield gen.Task(self.send, index, begin, length)
     elif message_id == Command.PIECE:
       index, begin = struct.unpack('>II', message[0:8])
-      # timestamp / bandwidth statistic
-      self._in.queue.append(Piece(index, begin, len(message[8:]), message[8:]))
-      # timestamp / bandwidth statistic
+      piece = Piece(index, begin, len(message[8:]), message[8:])
+      yield gen.Task(self._session.filemanager.write, piece)
+      self._in.sent(len(message) - 8)
     elif message_id == Command.CANCEL:
       index, begin, length = struct.unpack('>III', message_body)
       self._in.cancel_request(Piece(index, begin, length))

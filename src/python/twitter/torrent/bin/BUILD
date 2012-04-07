@@ -1,6 +1,6 @@
 python_binary(
-  name = 'test_session',
-  source = 'test_session.py',
+  name = 'client',
+  source = 'client.py',
   dependencies = [
     pants('src/python/twitter/common/app'),
     pants('src/python/twitter/torrent')

@@ -77,7 +77,7 @@ class Piece(object):
   @property
   def is_request(self):
     return self.block is None
-
+  
   def __eq__(self, other):
     return (self.index == other.index and
             self.offset == other.offset and
@@ -174,7 +174,8 @@ class FileManager(object):
 
   @staticmethod
   def from_session(session):
-    fs = FileSet([(mif.name, mif.length) for mif in session.info.files], session.piece_size)
+    fs = FileSet([(mif.name, mif.length) for mif in session.torrent.info.files],
+                 session.torrent.info.piece_size)
     return FileManager(fs, list(session.torrent.info.pieces), chroot=session.chroot,
         io_loop=session.io_loop)
 
@@ -185,10 +186,26 @@ class FileManager(object):
     self._fileset = fileset
     self._sliceset = SliceSet()
     self._chroot = chroot or tempfile.mkdtemp()
+    safe_mkdir(self._chroot)
     self._iopool = IOPool(io_loop=io_loop)
     self._initialize()
 
   #  --- piece initialization
+
+  @property
+  def total_size(self):
+    return sum((fp[1] for fp in self._fileset), 0)
+  
+  @property
+  def assembled_size(self):
+    # test this
+    assembled = 0
+    for index in range(len(self._pieces) - 1):
+      if self.have(index): assembled += self._fileset.piece_size
+    if self.have(len(self._pieces) - 1):
+      num_pieces, leftover = divmod(self.total_size, self._fileset.piece_size)
+      assembled += self._fileset.piece_size if not leftover else leftover
+    return assembled
 
   @staticmethod
   def safe_size(filename):
@@ -208,7 +225,7 @@ class FileManager(object):
     assert current_size <= size
     if current_size != size:
       diff = size - current_size
-      with open(filename, 'a') as fp:
+      with open(filename, 'a+b') as fp:
         while diff > 0:
           if diff > splat_size:
             fp.write(splat)
@@ -242,7 +259,7 @@ class FileManager(object):
     # cover the spans that we've succeeded in the sliceset
     for index in range(self._fileset.num_pieces):
       if self._actual_pieces[index] == self._pieces[index]:
-        self._sliceset.add(self._to_slice(index, 0, self._fileset.piece_size))
+        self._sliceset.add(self.to_slice(index, 0, self._fileset.piece_size))
 
   # ---- helpers
 
@@ -257,15 +274,20 @@ class FileManager(object):
       fp.write(self._actual_pieces[index])
 
   def have(self, index):
-    return self._pieces[index] == self._expected_pieces[index]
+    return self._pieces[index] == self._actual_pieces[index]
+
+  def __contains__(self, piece):
+    piece_slice = self.to_slice(piece.index, piece.begin, piece.length)
+    piece_start_index = piece_slice.start / self._fileset.piece_size
+    piece_stop_index = piece_slice.stop / self._fileset.piece_size
+    return all(self.have(index) for index in range(piece_start_index, piece_stop_index))
 
   def iter_slices(self, index, begin, length):
     """
       Given (piece index, begin, length), return an iterator over fileslice objects
       that cover the interval.
     """
-    piece = slice(index * self._piece_size + begin,
-                  index * self._piece_size + begin + length)
+    piece = self.to_slice(index, begin, length)
     offset = 0
     for (fn, fs) in self._fileset.files:
       if offset + fs <= piece.start:

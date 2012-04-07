@@ -1,3 +1,4 @@
+import array
 import datetime
 import errno
 import functools
@@ -8,7 +9,7 @@ import threading
 import urllib
 
 from twitter.common import log
-from twitter.common.quantity import Amount, Time
+from twitter.common.quantity import Amount, Time, Data
 
 import tornado.ioloop
 from tornado import gen, httpclient
@@ -17,6 +18,7 @@ from tornado.iostream import IOStream
 
 from .codec import BDecoder
 from .peer import Peer, PeerId
+from .fileset import FileManager
 
 
 class PieceSet(object):
@@ -176,9 +178,15 @@ class PeerListener(TCPServer):
 
 
 class Session(object):
-  SCHEDULE_INTERVAL = Amount(250, Time.MILLISECONDS)
+  # Retry values
   PEER_RETRY_INTERVAL = Amount(30, Time.SECONDS)
 
+  # Scheduling values
+  SCHEDULE_INTERVAL    = Amount(250, Time.MILLISECONDS)
+  TARGET_PEER_EGRESS   = Amount(2, Data.MB) # per second.
+  MAX_UNCHOKED_PEERS   = 5
+  MAX_PEERS            = 50
+  
   def __init__(self, torrent, chroot=None, port=None, io_loop=None):
     self._torrent = torrent
     self._port = port
@@ -187,14 +195,13 @@ class Session(object):
     self._connections = {} # address => Peer
     self._peer_id = None
     self._io_loop = io_loop or tornado.ioloop.IOLoop()  # singleton by default instead?
-    self._uploaded_bytes = 0    # switch these over to calculate-on-demand
-    self._downloaded_bytes = 0  #
-    self._assembled_bytes = 0   #
     self._schedule_timer = None
     self._schedules = 0
     self._chroot = chroot or tempfile.mkdtemp()
-    self._fileset = Fileset([(mif.name, mif.length) for mif in session.info.files],
-        session.piece_size, chroot)
+    self._filemanager = FileManager.from_session(self)
+    self._bitfield = Bitfield(torrent.info.num_pieces)
+    for k in range(torrent.info.num_pieces):
+      self._bitfield[k] = self._filemanager.have(k)
     self._pieces = PieceSet(self._torrent.info.num_pieces)
 
   # ---- properties
@@ -204,8 +211,8 @@ class Session(object):
     return self._port
 
   @property
-  def fileset(self):
-    return self._fileset
+  def chroot(self):
+    return self._chroot
 
   @property
   def peer_id(self):
@@ -224,15 +231,15 @@ class Session(object):
 
   @property
   def downloaded_bytes(self):
-    return self._downloaded_bytes
+    return sum((peer.ingress_bytes for peer in self._connections.values()), 0)
 
   @property
   def uploaded_bytes(self):
-    return self._uploaded_bytes
+    return sum((peer.egress_bytes for peer in self._connections.values()), 0)
 
   @property
   def assembled_bytes(self):
-    return self._assembled_bytes
+    return self._filemanager.assembled_size
 
   @property
   def pieces(self):
@@ -249,8 +256,7 @@ class Session(object):
     self._connections[address] = None
     new_peer = Peer(address, self, functools.partial(self._add_peer_cb, address))
     if iostream is None:
-      iostream = IOStream(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-          io_loop=self.io_loop)
+      iostream = IOStream(socket.socket(socket.AF_INET, socket.SOCK_STREAM), io_loop=self.io_loop)
       iostream.connect(address)
     new_peer.handshake(iostream)
 
@@ -259,14 +265,16 @@ class Session(object):
     if succeeded:
       log.info('Session [%s] added peer %s:%s [%s]' % (self._peer_id, address[0], address[1],
           peer.id))
+      # TODO(wickman) Check to see if the connected_peer is still connected, and replace if
+      # it has expired.
       for address, connected_peer in self._connections.items():
         if connected_peer and peer.id == connected_peer.id:
           log.info('Session already established with %s, disconnecting new one.' % peer.id)
           peer.disconnect()
           break
       else:
+        peer.send_bitfield(self._bitfield)
         self._connections[address] = peer
-        # peer.run()
     else:
       log.debug('Session [%s] failed to negotiate with %s:%s' % (self._peer_id,
         address[0], address[1]))
@@ -287,24 +295,28 @@ class Session(object):
       if address not in self._connections:
         self.add_peer(address)
 
-    # for peer in peers:
-    #   while peer.in:
-    #     piece = peer.in.popleft()
-    #     if piece.is_request:
-    #       fileset.read_threadpool.add((peer, piece))
-    #     else:
-    #       fileset.write_threadpool.add(piece)
+    # # Clear connections
+    # dead = set()
+    # for address, peer in self._connections.items():
+    #   if peer._iostream.closed():
+    #      dead.add(address)
+    # for address in self._connections:
+    #   self._dead.add(self._connections.pop(address))
     #
-    # while fileset.read_threadpool.results:
-    #   peer, piece = fileset.read_threadpool.results.popleft()
-    #   peer.send(piece)
+    # # Broadcast new pieces.
+    # for k in range(len(self._bitfield)):
+    #   if self._filemanager.have(k) and not self._bitfield[k]:
+    #     for peer in self._connections.values():
+    #       peer.send_have(k)
+    #     self._bitfield[k] = True
     #
-    # while fileset.write_threadpool.results:
-    #   piece = fileset.write_threadpool.results.popleft()
-    #   self._requested_pieces.discard(piece)
-    #
-    # num_requested = len(self._requested_pieces)
-    # num_desired = PARALLELISM - num_requested
+    # for address, peer in self._connections.items():
+    #   peer.ping_if_necessary()
+    #   ==>
+    #      if ping._in._last_keepalive > MAX_KEEPALIVE_WINDOW:
+    #        [peer.close && add peer to self._dead]
+    #      if peer._out._last_keepalive > MIN_KEEPALIVE_WINDOW:
+    #        peer.ping()
     #
     # to_enqueue = []
     # for piece, owner in iter_rarest_pieces():

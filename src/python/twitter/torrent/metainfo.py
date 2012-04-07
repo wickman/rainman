@@ -1,3 +1,4 @@
+import errno
 import hashlib
 import math
 import os
@@ -102,7 +103,7 @@ class MetaInfoBuilder(object):
   def add(self, filename):
     try:
       stat = os.stat(filename)
-    except OSError:
+    except OSError as e:
       if e.errno == errno.ENOENT:
         raise MetaInfoBuilder.FileNotFound("Could not find %s" % filename)
       raise
@@ -188,7 +189,7 @@ class MetaInfo(object):
       return sum(file['length'] for file in self._info.get('files', []))
 
   @property
-  def piece_length(self):
+  def piece_size(self):
     return self._info.get('piece length')
 
   @property

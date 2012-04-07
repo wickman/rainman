@@ -5,6 +5,7 @@ import functools
 import hashlib
 import socket
 import struct
+import tempfile
 import threading
 import urllib
 
@@ -16,9 +17,11 @@ from tornado import gen, httpclient
 from tornado.netutil import TCPServer
 from tornado.iostream import IOStream
 
+
+from .bitfield import Bitfield
 from .codec import BDecoder
-from .peer import Peer, PeerId
 from .fileset import FileManager
+from .peer import Peer, PeerId
 
 
 class PieceSet(object):
@@ -186,13 +189,14 @@ class Session(object):
   TARGET_PEER_EGRESS   = Amount(2, Data.MB) # per second.
   MAX_UNCHOKED_PEERS   = 5
   MAX_PEERS            = 50
-  
+
   def __init__(self, torrent, chroot=None, port=None, io_loop=None):
     self._torrent = torrent
     self._port = port
     self._peers = None     # PeerSet
     self._listener = None  # PeerListener
     self._connections = {} # address => Peer
+    self._dead = []
     self._peer_id = None
     self._io_loop = io_loop or tornado.ioloop.IOLoop()  # singleton by default instead?
     self._schedule_timer = None
@@ -231,11 +235,11 @@ class Session(object):
 
   @property
   def downloaded_bytes(self):
-    return sum((peer.ingress_bytes for peer in self._connections.values()), 0)
+    return sum((peer.ingress_bytes for peer in filter(None, self._connections.values())), 0)
 
   @property
   def uploaded_bytes(self):
-    return sum((peer.egress_bytes for peer in self._connections.values()), 0)
+    return sum((peer.egress_bytes for peer in filter(None, self._connections.values())), 0)
 
   @property
   def assembled_bytes(self):
@@ -275,6 +279,7 @@ class Session(object):
       else:
         peer.send_bitfield(self._bitfield)
         self._connections[address] = peer
+        self._io_loop.add_callback(peer.run)
     else:
       log.debug('Session [%s] failed to negotiate with %s:%s' % (self._peer_id,
         address[0], address[1]))
@@ -291,41 +296,49 @@ class Session(object):
     self._schedules += 1
     if self._schedules % 40 == 0:
       log.debug('Scheduler pass %d' % self._schedules)
-    for address in self._peers:
-      if address not in self._connections:
-        self.add_peer(address)
 
-    # # Clear connections
-    # dead = set()
-    # for address, peer in self._connections.items():
-    #   if peer._iostream.closed():
-    #      dead.add(address)
-    # for address in self._connections:
-    #   self._dead.add(self._connections.pop(address))
+    def add_new_connections():
+      for address in self._peers:
+        if address not in self._connections:
+          self.add_peer(address)
+
+    def filter_dead_connections():
+      dead = set()
+      for address, peer in self._connections.items():
+        if peer and (peer._iostream.closed() or not peer.healthy):
+          dead.add(address)
+      for address in dead:
+        peer = self._connections.pop(address)
+        peer.disconnect()
+        self._dead.append(peer)
+
+    def broadcast_new_pieces():
+      for k in range(len(self._bitfield)):
+        if self._filemanager.have(k) and not self._bitfield[k]:
+          # we completed a new piece
+          for peer in filter(None, self._connections.values()):
+            peer.send_have(k)
+          self._bitfield[k] = True
+
+    def ping_peers_if_necessary():
+      for peer in filter(None, self._connections.values()):
+        peer.send_keepalive()  # only sends if necessary
+
+    add_new_connections()
+    filter_dead_connections()
+    broadcast_new_pieces()
+    ping_peers_if_necessary()
+
+    # every 10s: self._rarest_pieces = calculate_rarest_pieces_from_peers()
     #
-    # # Broadcast new pieces.
-    # for k in range(len(self._bitfield)):
-    #   if self._filemanager.have(k) and not self._bitfield[k]:
-    #     for peer in self._connections.values():
-    #       peer.send_have(k)
-    #     self._bitfield[k] = True
     #
-    # for address, peer in self._connections.items():
-    #   peer.ping_if_necessary()
-    #   ==>
-    #      if ping._in._last_keepalive > MAX_KEEPALIVE_WINDOW:
-    #        [peer.close && add peer to self._dead]
-    #      if peer._out._last_keepalive > MIN_KEEPALIVE_WINDOW:
-    #        peer.ping()
-    #
-    # to_enqueue = []
-    # for piece, owner in iter_rarest_pieces():
-    #   if piece not in self._requested_pieces:
-    #     to_enqueue.add((piece, owner))
-    #
-    # random.shuffle(to_enqueue)
-    # for (piece, owner) in to_enqueue:   # increase # of pieces for faster/more responsive
-    #    owner.request(piece)
+    # for piece, owners in rarest_pieces:
+    #   missing_slices = self._filemanager.missing_from(piece)
+    #   for slice_ in missing_slices:
+    #     if slice_ not in self._time_decay_request_queue:
+    #       peer = random.choice(owners)
+    #       peer.request(slice_)
+    #       self._time_decay_request_queue.add(slice_)
 
 
   def start(self):

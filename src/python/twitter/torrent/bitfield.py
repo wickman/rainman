@@ -22,7 +22,7 @@ class Bitfield(object):
   def fill(self, value):
     """Fill the bitfield from a byte array."""
     for k in range(len(value)):
-      self._array[k] = value[k]
+      self._array[k] = ord(value[k])
 
   def __getitem__(self, index):
     if not isinstance(index, int):

@@ -77,7 +77,7 @@ class Piece(object):
   @property
   def is_request(self):
     return self.block is None
-  
+
   def __eq__(self, other):
     return (self.index == other.index and
             self.offset == other.offset and
@@ -195,7 +195,7 @@ class FileManager(object):
   @property
   def total_size(self):
     return sum((fp[1] for fp in self._fileset), 0)
-  
+
   @property
   def assembled_size(self):
     # test this

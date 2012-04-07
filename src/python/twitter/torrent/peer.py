@@ -7,8 +7,11 @@ from twitter.common import log
 from twitter.common.quantity import Time, Amount
 
 from tornado import gen
-from .metainfo import MetaInfo
+
 from .bandwidth import Bandwidth
+from .bitfield import Bitfield
+from .metainfo import MetaInfo
+
 
 
 class PeerId(object):
@@ -152,6 +155,8 @@ class Piece(object):
 
 class ConnectionState(object):
   BW_COLLECTION_INTERVAL = Amount(30, Time.SECONDS)
+  MIN_KEEPALIVE_WINDOW = Amount(2, Time.MINUTES)
+  MAX_KEEPALIVE_WINDOW = Amount(4, Time.MINUTES)
 
   def __init__(self):
     self._last_alive = time.time()
@@ -165,12 +170,22 @@ class ConnectionState(object):
   def queue(self):
     return self._queue
 
+  @property
+  def healthy(self):
+    now = time.time()
+    return now - self._last_alive < ConnectionState.MAX_KEEPALIVE_WINDOW.as_(Time.SECONDS)
+
+  @property
+  def needs_ping(self):
+    now = time.time()
+    return now - self._last_alive >= ConnectionState.MIN_KEEPALIVE_WINDOW.as_(Time.SECONDS)
+
   def updates_keepalive(fn):
     def wrapper(self, *args, **kw):
       self._last_alive = time.time()
       return fn(self, *args, **kw)
     return wrapper
-    
+
   @updates_keepalive
   def ping(self):
     pass
@@ -208,21 +223,21 @@ class Peer(object):
 
   def __init__(self, address, session, handshake_cb=None):
     self._id = None
-    self._active = False
+    self._active = True
     self._address = address
     self._session = session
     self._hash = hashlib.sha1(session.torrent.info.raw()).digest()
     self._handshake_cb = handshake_cb or (lambda *x: x)
     self._iostream = None
     self._outstanding_requests = 0
-    self._bitfield = Bitfield(session.info.pieces)
+    self._bitfield = Bitfield(session.torrent.info.num_pieces)
     self._in = ConnectionState()
     self._out = ConnectionState()
 
   @property
   def egress_bytes(self):
     return self._out._sent
-  
+
   @property
   def ingress_bytes(self):
     return self._in._sent
@@ -266,36 +281,49 @@ class Peer(object):
     while self._active:
       message_length = struct.unpack('>I', (yield gen.Task(self._iostream.read_bytes, 4)))[0]
       if message_length == 0:
+        log.debug('Received keepalive from [%s]' % self._id)
         self._in.ping()
         return
       message_body = yield gen.Task(self._iostream.read_bytes, message_length)
       message_id = ord(message_body[0])
-      self._dispatch(message_id, message_body[1:])
+      self.dispatch(message_id, message_body[1:])
 
   def choke(self):
     self._out.choke()
+    log.debug('Sending choke to [%s]' % self._id)
     self._iostream.write(Command.wire(Command.CHOKE))
 
   def unchoke(self):
     self._out.unchoke()
+    log.debug('Sending unchoke to [%s]' % self._id)
     self._iostream.write(Command.wire(Command.UNCHOKE))
 
   def interested(self):
     self._out.interested()
+    log.debug('Sending interested to [%s]' % self._id)
     self._iostream.write(Command.wire(Command.INTERESTED))
 
   def uninterested(self):
     self._out.uninterested()
+    log.debug('Sending uninterested to [%s]' % self._id)
     self._iostream.write(Command.wire(Command.NOT_INTERESTED))
 
+  @property
+  def healthy(self):
+    return self._in.healthy
+
   def send_keepalive(self):
-    self._out.ping()
-    self._iostream.write(struct.pack('>I', 0))
+    if self._out.needs_ping:
+      self._out.ping()
+      log.debug('Sending keepalive to [%s]' % self._id)
+      self._iostream.write(struct.pack('>I', 0))
 
   def send_have(self, index):
+    log.debug('Sending have(%s) to [%s]' % (index, self._id))
     self._iostream.write(Command.wire(Command.HAVE, index))
-  
+
   def send_bitfield(self, bitfield):
+    log.debug('Sending bitfield to [%s]' % self._id)
     self._iostream.write(Command.wire(Command.BITFIELD, bitfield))
 
   def send_request(self, index, begin, length):
@@ -310,44 +338,62 @@ class Peer(object):
     piece.block = yield gen.Task(self._session.filemanager.read, piece)
     yield gen.Task(self._iostream.write, Command.wire(Command.PIECE, piece))
     self._out.sent(length)
-    if callback: callback()
+    if callback:
+      self._io_loop.add_callback(callback)
 
   @gen.engine
   def dispatch(self, message_id, message_body, callback=None):
+    # TODO(wickman): Split these into recv_ messages
     if message_id == Command.CHOKE:
+      log.debug('Peer [%s] choking us.' % self._id)
       self._in.choke()
     elif message_id == Command.UNCHOKE:
+      log.debug('Peer [%s] unchoking us.' % self._id)
       self._in.unchoke()
     elif message_id == Command.INTERESTED:
+      log.debug('Peer [%s] interested.' % self._id)
       self._in.interested()
     elif message_id == Command.NOT_INTERESTED:
+      log.debug('Peer [%s] uninterested.' % self._id)
       self._in.uninterested()
     elif message_id == Command.HAVE:
       piece, = struct.unpack('>I', message_body)
       self._bitfield[piece] = True
+      log.debug('Peer [%s] has piece %s.' % (self._id, piece))
       self._session.pieces.have(piece)
     elif message_id == Command.BITFIELD:
       self._session.pieces.remove(self._bitfield)
       self._bitfield.fill(message_body)
+      log.debug('Peer [%s] has %d/%d pieces.' % (
+          self._id, sum((self._bitfield[k] for k in range(len(self._bitfield))), 0),
+          len(self._bitfield)))
       self._session.pieces.add(self._bitfield)
     elif message_id == Command.REQUEST:
       index, begin, length = struct.unpack('>III', message_body)
       piece = Piece(index, begin, length)
+      log.debug('Peer [%s] requested %s' % (self._id, piece))
       if piece in self._session.filemanager:
+        log.debug('   => we have %s, initiating send.' % piece)
         yield gen.Task(self.send, index, begin, length)
+      else:
+        log.debug('   => do not have %s, ignoring.' % piece)
     elif message_id == Command.PIECE:
       index, begin = struct.unpack('>II', message[0:8])
       piece = Piece(index, begin, len(message[8:]), message[8:])
+      log.debug('Received %s from [%s]' % (piece, self._id))
       yield gen.Task(self._session.filemanager.write, piece)
       self._in.sent(len(message) - 8)
     elif message_id == Command.CANCEL:
       index, begin, length = struct.unpack('>III', message_body)
+      log.debug('Peer [%s] canceling %s' % (self._id, Piece(index, begin, length)))
       self._in.cancel_request(Piece(index, begin, length))
     else:
       raise Peer.BadMessage('Unknown message id: %s' % message_id)
-    callback()
+    if callback:
+      self._io_loop.add(callback)
 
   def disconnect(self):
+    log.debug('Disconnecting from [%s]' % self._id)
     if self._iostream:
       self._iostream.close()
     self._active = False

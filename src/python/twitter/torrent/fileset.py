@@ -7,6 +7,7 @@ import tempfile
 
 import tornado.gen
 from twitter.common.dirutil import safe_mkdir, safe_rmtree
+from twitter.common import log
 
 from .iopool import IOPool
 from .sliceset import SliceSet
@@ -74,15 +75,22 @@ class Piece(object):
     self.length = length
     self.block = block
 
+  def __hash__(self):
+    return hash((self.index, self.offset, self.length))
+
+  def __str__(self):
+    return 'Piece(%s[%s:%s]%s)' % (
+      self.index, self.offset, self.offset+self.length, '*' if self.block else '')
+
   @property
   def is_request(self):
     return self.block is None
 
+  # Do not consider the block in equality.
   def __eq__(self, other):
     return (self.index == other.index and
             self.offset == other.offset and
-            self.length == other.length and
-            self.block == other.block)
+            self.length == other.length)
 
 
 class FileSet(object):
@@ -187,10 +195,15 @@ class FileManager(object):
     self._sliceset = SliceSet()
     self._chroot = chroot or tempfile.mkdtemp()
     safe_mkdir(self._chroot)
-    self._iopool = IOPool(io_loop=io_loop)
+    self._io_loop = io_loop or tornado.ioloop.IOLoop.instance()
+    self._iopool = IOPool(io_loop=self._io_loop)
     self._initialize()
 
   #  --- piece initialization
+
+  @property
+  def slices(self):
+    return self._sliceset
 
   @property
   def total_size(self):
@@ -269,15 +282,18 @@ class FileManager(object):
     return slice(start, stop)
 
   def update_cache(self, index):
-    with open(self._hashfile, 'r+b') as fp:
+    with open(self.hashfile, 'r+b') as fp:
       fp.seek(index * 20)
       fp.write(self._actual_pieces[index])
 
   def have(self, index):
     return self._pieces[index] == self._actual_pieces[index]
 
-  def __contains__(self, piece):
-    piece_slice = self.to_slice(piece.index, piece.begin, piece.length)
+  def covers(self, piece):
+    """
+      Whether or not this FileManager contains all pieces covered by this piece slice.
+    """
+    piece_slice = self.to_slice(piece.index, piece.offset, piece.length)
     piece_start_index = piece_slice.start / self._fileset.piece_size
     piece_stop_index = piece_slice.stop / self._fileset.piece_size
     return all(self.have(index) for index in range(piece_start_index, piece_stop_index))
@@ -326,6 +342,13 @@ class FileManager(object):
 
   # ---- io_loop interface
 
+  def whole_piece(self, index):
+    num_pieces, leftover = divmod(self._fileset.size, self._fileset.piece_size)
+    assert index < num_pieces
+    if not leftover or index < num_pieces - 1:
+      return Piece(index, 0, self._fileset.piece_size)
+    return Piece(index, 0, leftover)
+
   @tornado.gen.engine
   def read(self, piece, callback):
     """
@@ -352,27 +375,35 @@ class FileManager(object):
           tornado.gen.Task(self._iopool.add, fileslice.write, slice_.rooted_at(self._chroot),
                            piece.block[offset : offset+slice_.length]))
       offset += slice_.length
-    with NullCallbackDispatcher(callback):
-      yield slices
-      yield tornado.gen.Task(self.touch, piece.index, piece.offset, piece.length)
+    yield slices
+    yield tornado.gen.Task(self.touch, piece.index, piece.offset, piece.length)
+    self._io_loop.add_callback(callback)
 
   @tornado.gen.engine
   def touch(self, index, begin, length, callback=None):
     callback = callback or (lambda x: x)
+    log.debug('FileIOPool.sliceset.add(%s)' % self.to_slice(index, begin, length))
     self._sliceset.add(self.to_slice(index, begin, length))
     piece_slice = self.to_slice(index, 0, self._fileset.piece_size)
-    with NullCallbackDispatcher(callback):
-      if piece_slice not in self._sliceset:
-        # the piece isn't complete so don't bother with an expensive calculation
-        return
-      self._actual_pieces[index] = hashlib.sha1(
-          (yield tornado.gen.Task(self.read, Piece(index, begin, length)))).digest()
-      if self._pieces[index] == self._actual_pieces[index]:
-        self.update_cache(index)
-      else:
-        # the hash was incorrect.  none of this data is good.
-        self._sliceset.erase(piece_slice)
+    if piece_slice not in self._sliceset:
+      # the piece isn't complete so don't bother with an expensive calculation
+      self._io_loop.add_callback(callback)
+      return
+    log.debug('FileIOPool.touch: Performing SHA1 on %s' % index)
+    self._actual_pieces[index] = hashlib.sha1(
+        (yield tornado.gen.Task(self.read, self.whole_piece(index)))).digest()
+    if self._pieces[index] == self._actual_pieces[index]:
+      log.debug('FileIOPool.touch: Finished piece %s!' % index)
+      self.update_cache(index)
+    else:
+      # the hash was incorrect.  none of this data is good.
+      log.debug('FileIOPool.touch: Corrupt piece %s, erasing extent %s' % (index, piece_slice))
+      self._sliceset.erase(piece_slice)
+    self._io_loop.add_callback(callback)
+
+  def stop(self):
+    self._iopool.stop()
 
   def destroy(self):
     safe_rmtree(self._chroot)
-    self._iopool.stop()
+    self.stop()

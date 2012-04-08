@@ -11,6 +11,7 @@ from tornado import gen
 from .bandwidth import Bandwidth
 from .bitfield import Bitfield
 from .metainfo import MetaInfo
+from .fileset import Piece
 
 
 
@@ -94,6 +95,7 @@ class PeerHandshake(object):
     return self.is_set(self.EXTENSION_BITS['Extension protocol'])
 
 
+# TODO(wickman) The wire protocol stuff needs to be cleaned up a little.
 class Command(object):
   CHOKE          = 0
   UNCHOKE        = 1
@@ -122,35 +124,17 @@ class Command(object):
       piece = args[0]
       assert piece.is_request
       return ''.join([struct.pack('>I', 13), struct.pack('B', command),
-                      struct.pack('>III', piece.index, piece.begin, piece.length)])
+                      struct.pack('>III', piece.index, piece.offset, piece.length)])
     elif command == Command.PIECE:
       assert len(args) == 1 and isinstance(args[0], Piece)
       piece = args[0]
       assert not piece.is_request
       return ''.join([struct.pack('>I', 9 + piece.length), struct.pack('B', command),
-                      struct.pack('>II', piece.index, piece.begin),
+                      struct.pack('>II', piece.index, piece.offset),
                       piece.block])
     else:
       raise Peer.BadMessage('Unknown message id: %s' % command)
     callback()
-
-
-class Piece(object):
-  def __init__(self, index, offset, length, block=None):
-    self.index = index
-    self.offset = offset
-    self.length = length
-    self.block = block
-
-  @property
-  def is_request(self):
-    return self.block is None
-
-  def __eq__(self, other):
-    return (self.index == other.index and
-            self.offset == other.offset and
-            self.length == other.length and
-            self.block == other.block)
 
 
 class ConnectionState(object):
@@ -166,6 +150,12 @@ class ConnectionState(object):
     self._sent = 0
     self._bandwidth = Bandwidth(window=ConnectionState.BW_COLLECTION_INTERVAL)
 
+  def updates_keepalive(fn):
+    def wrapper(self, *args, **kw):
+      self._last_alive = time.time()
+      return fn(self, *args, **kw)
+    return wrapper
+
   @property
   def queue(self):
     return self._queue
@@ -180,31 +170,27 @@ class ConnectionState(object):
     now = time.time()
     return now - self._last_alive >= ConnectionState.MIN_KEEPALIVE_WINDOW.as_(Time.SECONDS)
 
-  def updates_keepalive(fn):
-    def wrapper(self, *args, **kw):
-      self._last_alive = time.time()
-      return fn(self, *args, **kw)
-    return wrapper
+  @property
+  def choked(self):
+    return self._choked
+
+  @choked.setter
+  @updates_keepalive
+  def choked(self, value):
+    self._choked = bool(value)
 
   @updates_keepalive
   def ping(self):
     pass
 
-  @updates_keepalive
-  def choke(self):
-    self._choked = True
-
-  @updates_keepalive
-  def unchoke(self):
-    self._choked = False
-
-  @updates_keepalive
+  @property
   def interested(self):
-    self._interested = True
-
+    return self._interested
+  
+  @interested.setter
   @updates_keepalive
-  def uninterested(self):
-    self._interested = False
+  def interested(self, value):
+    self._interested = bool(value)
 
   @updates_keepalive
   def cancel_request(self, piece):
@@ -213,7 +199,7 @@ class ConnectionState(object):
   @updates_keepalive
   def sent(self, num_bytes):
     self._sent += num_bytes
-    self._bandwidth.sample(num_bytes)
+    self._bandwidth.add(num_bytes)
 
   del updates_keepalive
 
@@ -229,10 +215,16 @@ class Peer(object):
     self._hash = hashlib.sha1(session.torrent.info.raw()).digest()
     self._handshake_cb = handshake_cb or (lambda *x: x)
     self._iostream = None
-    self._outstanding_requests = 0
     self._bitfield = Bitfield(session.torrent.info.num_pieces)
     self._in = ConnectionState()
     self._out = ConnectionState()
+
+  def __str__(self):
+    return 'Peer(%s)' % self._id
+
+  @property
+  def bitfield(self):
+    return self._bitfield
 
   @property
   def egress_bytes(self):
@@ -241,6 +233,14 @@ class Peer(object):
   @property
   def ingress_bytes(self):
     return self._in._sent
+  
+  @property
+  def ingress_bandwidth(self):
+    return self._in._bandwidth
+  
+  @property
+  def egress_bandwidth(self):
+    return self._out._bandwidth
 
   @property
   def id(self):
@@ -268,7 +268,7 @@ class Peer(object):
       else:
         log.debug('Session [%s] got mismatched torrent hashes.' % self._session.peer_id)
     except PeerHandshake.InvalidHandshake as e:
-      log.debug('Session [%s] got bad handshake with %s:%s: ' % (self._session.peer_id,
+      log.debug('Session [%s] got bad handshake with %s:%s: %s' % (self._session.peer_id,
         self._address[0], self._address[1], e))
       iostream.close()
 
@@ -286,27 +286,35 @@ class Peer(object):
         return
       message_body = yield gen.Task(self._iostream.read_bytes, message_length)
       message_id = ord(message_body[0])
-      self.dispatch(message_id, message_body[1:])
+      self._recv_dispatch(message_id, message_body[1:])
 
+  @property
+  def choked(self):
+    return self._out.choked
+    
   def choke(self):
-    self._out.choke()
+    self._in.choked = True
     log.debug('Sending choke to [%s]' % self._id)
     self._iostream.write(Command.wire(Command.CHOKE))
 
   def unchoke(self):
-    self._out.unchoke()
+    self._in.choked = False
     log.debug('Sending unchoke to [%s]' % self._id)
     self._iostream.write(Command.wire(Command.UNCHOKE))
 
+  @property
   def interested(self):
-    self._out.interested()
-    log.debug('Sending interested to [%s]' % self._id)
-    self._iostream.write(Command.wire(Command.INTERESTED))
-
-  def uninterested(self):
-    self._out.uninterested()
-    log.debug('Sending uninterested to [%s]' % self._id)
-    self._iostream.write(Command.wire(Command.NOT_INTERESTED))
+    return self._out.interested
+  
+  @interested.setter
+  def interested(self, value):
+    value = bool(value)
+    if value == self._out.interested:
+      return
+    self._out.interested = value
+    log.debug('Sending %sinterested to [%s]' % ('' if value else 'un', self._id))
+    self._iostream.write(Command.wire(Command.INTERESTED) if self._out.interested
+                    else Command.wire(Command.NOT_INTERESTED))
 
   @property
   def healthy(self):
@@ -326,14 +334,19 @@ class Peer(object):
     log.debug('Sending bitfield to [%s]' % self._id)
     self._iostream.write(Command.wire(Command.BITFIELD, bitfield))
 
+  def send_cancel(self, index, begin, length):
+    self._iostream.write(Command.wire(Command.CANCEL, Piece(index, begin, length)))
+  
   def send_request(self, index, begin, length):
-    def completed():
-      self._outstanding_requests += 1
-    self._iostream.write(Command.wire(Command.REQUEST, Piece(index, begin, length)),
-      callback=decrement)
+    self._iostream.write(Command.wire(Command.REQUEST, Piece(index, begin, length)))
 
   @gen.engine
-  def send(self, index, begin, length, callback=None):
+  def send_piece(self, index, begin, length, callback=None):
+    piece = Piece(index, begin, length)
+    if not self._out._interested or self._out._choked:
+      log.debug('Skipping send of %s to [%s] (interested:%s, choked:%s)' % (
+        piece, self._id, self._out._interested, self._out._choked))
+      return
     piece = Piece(index, begin, length)
     piece.block = yield gen.Task(self._session.filemanager.read, piece)
     yield gen.Task(self._iostream.write, Command.wire(Command.PIECE, piece))
@@ -342,20 +355,20 @@ class Peer(object):
       self._io_loop.add_callback(callback)
 
   @gen.engine
-  def dispatch(self, message_id, message_body, callback=None):
+  def _recv_dispatch(self, message_id, message_body, callback=None):
     # TODO(wickman): Split these into recv_ messages
     if message_id == Command.CHOKE:
       log.debug('Peer [%s] choking us.' % self._id)
-      self._in.choke()
+      self._out.choked = True
     elif message_id == Command.UNCHOKE:
       log.debug('Peer [%s] unchoking us.' % self._id)
-      self._in.unchoke()
+      self._out.choked = False
     elif message_id == Command.INTERESTED:
       log.debug('Peer [%s] interested.' % self._id)
-      self._in.interested()
+      self._in.interested = True
     elif message_id == Command.NOT_INTERESTED:
       log.debug('Peer [%s] uninterested.' % self._id)
-      self._in.uninterested()
+      self._in.interested = False
     elif message_id == Command.HAVE:
       piece, = struct.unpack('>I', message_body)
       self._bitfield[piece] = True
@@ -368,21 +381,23 @@ class Peer(object):
           self._id, sum((self._bitfield[k] for k in range(len(self._bitfield))), 0),
           len(self._bitfield)))
       self._session.pieces.add(self._bitfield)
+      self._session.recalculate_rare_pieces()
     elif message_id == Command.REQUEST:
       index, begin, length = struct.unpack('>III', message_body)
       piece = Piece(index, begin, length)
       log.debug('Peer [%s] requested %s' % (self._id, piece))
-      if piece in self._session.filemanager:
+      if self._session.filemanager.covers(piece):
         log.debug('   => we have %s, initiating send.' % piece)
-        yield gen.Task(self.send, index, begin, length)
+        yield gen.Task(self.send_piece, index, begin, length)
       else:
         log.debug('   => do not have %s, ignoring.' % piece)
     elif message_id == Command.PIECE:
-      index, begin = struct.unpack('>II', message[0:8])
-      piece = Piece(index, begin, len(message[8:]), message[8:])
+      index, begin = struct.unpack('>II', message_body[0:8])
+      piece = Piece(index, begin, len(message_body[8:]), message_body[8:])
       log.debug('Received %s from [%s]' % (piece, self._id))
+      self._session.scheduler.received(piece, from_peer=self)
       yield gen.Task(self._session.filemanager.write, piece)
-      self._in.sent(len(message) - 8)
+      self._in.sent(len(message_body) - 8)
     elif message_id == Command.CANCEL:
       index, begin, length = struct.unpack('>III', message_body)
       log.debug('Peer [%s] canceling %s' % (self._id, Piece(index, begin, length)))

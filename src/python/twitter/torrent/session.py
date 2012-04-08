@@ -3,10 +3,12 @@ import datetime
 import errno
 import functools
 import hashlib
+import random
 import socket
 import struct
 import tempfile
 import threading
+import time
 import urllib
 
 from twitter.common import log
@@ -20,39 +22,95 @@ from tornado.iostream import IOStream
 
 from .bitfield import Bitfield
 from .codec import BDecoder
-from .fileset import FileManager
+from .fileset import FileManager, Piece
 from .peer import Peer, PeerId
+
+
+class TimeDecayMap(object):
+  """
+    A time-decaying map from slice to a list of peers from whom the slice
+    has been requested.
+  """
+
+  DEFAULT_WINDOW = Amount(5, Time.SECONDS)
+  
+  def __init__(self, window=DEFAULT_WINDOW, clock=time):
+    self._window = window.as_(Time.SECONDS)
+    self._clock = clock
+    self._slices = {} # slice => list(peer)
+    self._outstanding = 0
+  
+  @property
+  def outstanding(self):
+    return self._outstanding
+
+  def add(self, slice_, peer_id):
+    """Indicate that we have requested slice_ from peer_id"""
+    if slice_ not in self._slices:
+      self._slices[slice_] = []
+    self._slices[slice_].append((self._clock.time(), peer_id))
+    self._outstanding += 1
+  
+  def remove(self, slice_):
+    """returns the list of peers to whom this request is outstanding."""
+    if slice_ not in self._slices:
+      return []
+    requests = [peer for _, peer in self._slices.pop(slice_)]
+    self._outstanding -= len(requests)
+    return requests
+  
+  def _filter(self, slice_):
+    """Filter expired slices."""
+    now = self._clock.time()
+    if slice_ not in self._slices:
+      return
+    requests = len(self._slices[slice_])
+    def too_old(pair):
+      timestamp, peer_id = pair
+      return (now - pair[0]) >= self._window
+    left = [pair for pair in self._slices[slice_] if not too_old(pair)]
+    if left:
+      self._slices[slice_] = left
+      self._outstanding -= requests - len(left)
+    else:
+      self._slices.pop(slice_)
+      self._outstanding -= requests
+
+  def __getitem__(self, slice_):
+    """Get the list of non-expired peers to whom this slice_ has been requested."""
+    self._filter(slice_)
+    if slice_ not in self._slices:
+      return []
+    return [peer for _, peer in self._slices[slice_]]
+  
+  def __contains__(self, slice_):
+    self._filter(slice_)
+    return slice_ in self._slices
 
 
 class PieceSet(object):
   def __init__(self, length):
-    self._length = length
-    self._owners = array.array('B', [0] * length)
+    self._num_owners = array.array('B', [0] * length)
 
   def have(self, index):
-    self._owners[index] += 1
+    self._num_owners[index] += 1
 
   def add(self, bitfield):
     for k in range(len(bitfield)):
-      self._owners[k] += bitfield[k]
+      self._num_owners[k] += bitfield[k]
 
   def remove(self, bitfield):
     for k in range(len(bitfield)):
-      self._owners[k] -= bitfield[k]
+      self._num_owners[k] -= bitfield[k]
 
-  # Premature optimization is the root of all evil?
-  def get(self, count=10, owned=None):
-    enumerated = sorted(
-        [(self._owners[k], k) for k in range(self._length)
-          if owned and not owned[k] and self._owners[k]], reverse=True)
-    first = enumerated[:count]
-    random.shuffle(first)
-    return first
-
-  @property
-  def left(self, owned):
-    return self._length - sum(owned)
-
+  # TODO(wickman) Fix this if it proves to be too slow.
+  def rarest(self, count=None, owned=None):
+    def exists_but_not_owned(pair):
+      index, count = pair
+      return count > 0 and (not owned or not owned[index])
+    rarest_pieces = sorted(filter(exists_but_not_owned, enumerate(self._num_owners)),
+                           key=lambda val: val[1])
+    return [val[0] for val in (rarest_pieces[:count] if count else rarest_pieces)]
 
 
 class PeerSet(object):
@@ -180,15 +238,112 @@ class PeerListener(TCPServer):
     self._handler(address, iostream)
 
 
-class Session(object):
-  # Retry values
-  PEER_RETRY_INTERVAL = Amount(30, Time.SECONDS)
+class Scheduler(object):
+  """
+    From BEP-003:
+  
+    The currently deployed choking algorithm avoids fibrillation by only
+    changing who's choked once every ten seconds.  It does reciprocation and
+    number of uploads capping by unchoking the four peers which it has the
+    best download rates from and are interested.  Peers which have a better
+    upload rate but aren't interested get unchoked and if they become
+    interested the worst uploader gets choked.  If a downloader has a complete
+    file, it uses its upload rate rather than its download rate to decide who
+    to unchoke.
 
+    For optimistic unchoking, at any one time there is a single peer which is
+    unchoked regardless of it's upload rate (if interested, it counts as one
+    of the four allowed downloaders.) Which peer is optimistically unchoked
+    rotates every 30 seconds.  To give them a decent chance of getting a
+    complete piece to upload, new connections are three times as likely to
+    start as the current optimistic unchoke as anywhere else in the rotation.
+  """
   # Scheduling values
-  SCHEDULE_INTERVAL    = Amount(250, Time.MILLISECONDS)
+  SCHEDULING_INTERVAL  = Amount(1000, Time.MILLISECONDS)
   TARGET_PEER_EGRESS   = Amount(2, Data.MB) # per second.
   MAX_UNCHOKED_PEERS   = 5
   MAX_PEERS            = 50
+  MAX_REQUESTS         = 100
+  REQUEST_SIZE         = Amount(16, Data.KB)
+
+  def __init__(self, session):
+    self._session = session
+    self._requests = TimeDecayMap()
+    self._schedules = 0
+    self._timer = None
+
+  def piece_size(self, index):
+    num_pieces, leftover = divmod(self._session.torrent.info.length,
+                                  self._session.torrent.info.piece_size)
+    assert index < num_pieces
+    if not leftover:
+      return self._session.torrent.info.piece_size
+    if index == num_pieces - 1:
+      return leftover
+    return self._session.torrent.info.piece_size
+
+  def split_piece(self, index):
+    request_size = int(Scheduler.REQUEST_SIZE.as_(Data.BYTES))
+    ps = self.piece_size(index)
+    for k in range(0, ps, request_size):
+      yield Piece(index, k, request_size if k + request_size <= ps else ps % request_size)
+
+  def schedule(self):
+    self._schedules += 1
+    def debug(msg):
+      if self._schedules % 50 == 0:
+        log.debug(msg)
+    debug('Scheduler pass %d.' % self._schedules)
+    if self._schedules % 50 == 0:
+      self.recalculate_rare_pieces()
+
+    def to_slice(piece):
+      start = piece.index * self._session.torrent.info.piece_size + piece.offset
+      return slice(start, start + piece.length)
+
+    for piece_index in self._session.rarest:
+      if self._session.has(piece_index):
+        continue
+      # find owners of this piece that are not choking us or for whom we've not yet registered
+      # intent to download
+      owners = [peer for peer in self._session.owners(piece_index)
+                if not peer.choked or not peer.interested]
+      if not owners: continue
+      for subpiece in list(self.split_piece(piece_index)):
+        if to_slice(subpiece) not in self._session.filemanager.slices and subpiece not in self._requests:
+          if self._requests.outstanding > Scheduler.MAX_REQUESTS:
+            log.debug('Hit max requests, waiting.')
+            return
+          random_peer = random.choice(owners)
+          if random_peer.choked:
+            random_peer.interested = True
+            continue
+          log.debug('Scheduler requesting %s from peer [%s].' % (subpiece, random_peer))
+          random_peer.send_request(subpiece.index, subpiece.offset, subpiece.length)
+          self._requests.add(subpiece, random_peer)
+
+  def received(self, piece, from_peer):
+    if piece not in self._requests:
+      log.error('Expected piece in request set, not there!')
+    for peer in self._requests.remove(piece):
+      if peer != from_peer:
+        log.debug('Sending cancellation to peer [%s]' % peer.id)
+        peer.send_cancel(piece.index, piece.offset, piece.length)
+    
+  def start(self):
+    self._timer = tornado.ioloop.PeriodicCallback(self.schedule,
+        Scheduler.SCHEDULING_INTERVAL.as_(Time.MILLISECONDS), self._session.io_loop)
+    self._timer.start()
+
+  def stop(self):
+    self._timer.stop()
+
+
+class Session(object):
+  # Retry values
+  PEER_RETRY_INTERVAL  = Amount(30, Time.SECONDS)
+  MAINTENANCE_INTERVAL = Amount(200, Time.MILLISECONDS)
+  LOGGING_INTERVAL     = Amount(10, Time.SECONDS)
 
   def __init__(self, torrent, chroot=None, port=None, io_loop=None):
     self._torrent = torrent
@@ -199,16 +354,23 @@ class Session(object):
     self._dead = []
     self._peer_id = None
     self._io_loop = io_loop or tornado.ioloop.IOLoop()  # singleton by default instead?
-    self._schedule_timer = None
-    self._schedules = 0
+    self._maintenance_timer = None
+    self._logging_timer = None
     self._chroot = chroot or tempfile.mkdtemp()
     self._filemanager = FileManager.from_session(self)
     self._bitfield = Bitfield(torrent.info.num_pieces)
     for k in range(torrent.info.num_pieces):
       self._bitfield[k] = self._filemanager.have(k)
     self._pieces = PieceSet(self._torrent.info.num_pieces)
+    self._rarest = self._pieces.rarest()
+    self._scheduler = Scheduler(self)
+
 
   # ---- properties
+
+  @property
+  def scheduler(self):
+    return self._scheduler
 
   @property
   def port(self):
@@ -233,13 +395,20 @@ class Session(object):
   def io_loop(self):
     return self._io_loop
 
+  # This is getting ridiculous
+  @property
+  def filemanager(self):
+    return self._filemanager
+
   @property
   def downloaded_bytes(self):
-    return sum((peer.ingress_bytes for peer in filter(None, self._connections.values())), 0)
+    return sum(peer.ingress_bytes for peer in self._dead) + sum(
+        peer.ingress_bytes for peer in filter(None, self._connections.values()))
 
   @property
   def uploaded_bytes(self):
-    return sum((peer.egress_bytes for peer in filter(None, self._connections.values())), 0)
+    return sum(peer.egress_bytes for peer in self._dead) + sum(
+        peer.ingress_bytes for peer in filter(None, self._connections.values()))
 
   @property
   def assembled_bytes(self):
@@ -248,6 +417,16 @@ class Session(object):
   @property
   def pieces(self):
     return self._pieces
+
+  @property
+  def rarest(self):
+    return self._rarest
+
+  def has(self, index):
+    return self._bitfield[index]
+
+  def owners(self, index):
+    return [peer for peer in filter(None, self._connections.values()) if peer.bitfield[index]]
 
   # ----- mutations
 
@@ -292,11 +471,10 @@ class Session(object):
       self._io_loop.add_timeout(datetime.timedelta(0, self.PEER_RETRY_INTERVAL.as_(Time.SECONDS)),
           expire_retry)
 
-  def schedule(self):
-    self._schedules += 1
-    if self._schedules % 40 == 0:
-      log.debug('Scheduler pass %d' % self._schedules)
+  def recalculate_rare_pieces(self):
+    self._rarest = self._pieces.rarest(owned=self._bitfield)
 
+  def maintenance(self):
     def add_new_connections():
       for address in self._peers:
         if address not in self._connections:
@@ -306,6 +484,7 @@ class Session(object):
       dead = set()
       for address, peer in self._connections.items():
         if peer and (peer._iostream.closed() or not peer.healthy):
+          log.debug('Garbage collecting peer [%s]' % peer.id)
           dead.add(address)
       for address in dead:
         peer = self._connections.pop(address)
@@ -316,6 +495,7 @@ class Session(object):
       for k in range(len(self._bitfield)):
         if self._filemanager.have(k) and not self._bitfield[k]:
           # we completed a new piece
+          log.debug('Completed piece %s' % k)
           for peer in filter(None, self._connections.values()):
             peer.send_have(k)
           self._bitfield[k] = True
@@ -328,24 +508,29 @@ class Session(object):
     filter_dead_connections()
     broadcast_new_pieces()
     ping_peers_if_necessary()
-
-    # every 10s: self._rarest_pieces = calculate_rarest_pieces_from_peers()
-    #
-    #
-    # for piece, owners in rarest_pieces:
-    #   missing_slices = self._filemanager.missing_from(piece)
-    #   for slice_ in missing_slices:
-    #     if slice_ not in self._time_decay_request_queue:
-    #       peer = random.choice(owners)
-    #       peer.request(slice_)
-    #       self._time_decay_request_queue.add(slice_)
-
+    
+  def periodic_logging(self):
+    for peer in filter(None, self._connections.values()):
+      log.debug('   = Peer [%s] in: %.1f Mbps  out: %.1f Mbps' % (peer.id,
+          peer.ingress_bandwidth.bandwidth * 8. / 1048576,
+          peer.egress_bandwidth.bandwidth * 8. / 1048576))
 
   def start(self):
     self._listener = PeerListener(self.add_peer, io_loop=self._io_loop, port=self._port)
     self._port = self._listener.port
     self._peers = PeerSet(self)
-    self._schedule_timer = tornado.ioloop.PeriodicCallback(self.schedule,
-        Session.SCHEDULE_INTERVAL.as_(Time.MILLISECONDS), self._io_loop)
-    self._schedule_timer.start()
+    self._maintenance_timer = tornado.ioloop.PeriodicCallback(self.maintenance,
+        Session.MAINTENANCE_INTERVAL.as_(Time.MILLISECONDS), self._io_loop)
+    self._logging_timer = tornado.ioloop.PeriodicCallback(self.periodic_logging,
+        Session.LOGGING_INTERVAL.as_(Time.MILLISECONDS), self._io_loop)
+    self._maintenance_timer.start()
+    self._logging_timer.start()
+    self._scheduler.start()
     self._io_loop.start()
+
+  def stop(self):
+    self._listener.stop()
+    self._maintenance_timer.stop()
+    self._logging_timer.start()
+    self._filemanager.stop()
+    self._io_loop.stop()

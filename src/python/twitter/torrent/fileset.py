@@ -216,7 +216,7 @@ class FileManager(object):
     for index in range(len(self._pieces) - 1):
       if self.have(index): assembled += self._fileset.piece_size
     if self.have(len(self._pieces) - 1):
-      num_pieces, leftover = divmod(self.total_size, self._fileset.piece_size)
+      _, leftover = divmod(self.total_size, self._fileset.piece_size)
       assembled += self._fileset.piece_size if not leftover else leftover
     return assembled
 
@@ -344,6 +344,7 @@ class FileManager(object):
 
   def whole_piece(self, index):
     num_pieces, leftover = divmod(self._fileset.size, self._fileset.piece_size)
+    num_pieces += leftover > 0
     assert index < num_pieces
     if not leftover or index < num_pieces - 1:
       return Piece(index, 0, self._fileset.piece_size)

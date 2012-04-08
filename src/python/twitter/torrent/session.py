@@ -275,7 +275,8 @@ class Scheduler(object):
   def piece_size(self, index):
     num_pieces, leftover = divmod(self._session.torrent.info.length,
                                   self._session.torrent.info.piece_size)
-    assert index < num_pieces
+    num_pieces += leftover > 0
+    assert index < num_pieces, 'Got index (%s) but num_pieces is %s' % (index, num_pieces)
     if not leftover:
       return self._session.torrent.info.piece_size
     if index == num_pieces - 1:
@@ -302,6 +303,7 @@ class Scheduler(object):
       return slice(start, start + piece.length)
 
     for piece_index in self._session.rarest:
+      log.debug('Rarest piece: %s' % piece_index)
       if self._session.has(piece_index):
         continue
       # find owners of this piece that are not choking us or for whom we've not yet registered
@@ -361,6 +363,7 @@ class Session(object):
     self._bitfield = Bitfield(torrent.info.num_pieces)
     for k in range(torrent.info.num_pieces):
       self._bitfield[k] = self._filemanager.have(k)
+    log.debug('Torrent says number of pieces is: %s' % self._torrent.info.num_pieces)
     self._pieces = PieceSet(self._torrent.info.num_pieces)
     self._rarest = self._pieces.rarest()
     self._scheduler = Scheduler(self)

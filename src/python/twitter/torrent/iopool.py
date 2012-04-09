@@ -48,7 +48,7 @@ class IOPool(object):
   def __init__(self, io_loop=None, workers=DEFAULT_WORKERS):
     self._in_queue = Queue()
     self._io_loop = io_loop or tornado.ioloop.IOLoop.instance()
-    self._workers = [IOPool.Worker(self._in_queue, self._io_loop) for k in range(workers)]
+    self._workers = [IOPool.Worker(self._in_queue, self._io_loop) for _ in range(workers)]
 
   def add(self, function, *args, **kw):
     callback = kw.pop('callback', (lambda *a,**k: True))

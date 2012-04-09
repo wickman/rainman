@@ -2,7 +2,6 @@ import errno
 import hashlib
 import os
 import struct
-import sys
 import tempfile
 
 import tornado.gen

@@ -84,15 +84,15 @@ class PeerHandshake(object):
 
   @property
   def dht(self):
-    return self.is_set(self.EXTENSION_BITS['DHT'])
+    return self.is_set(self._reserved_bits, self.EXTENSION_BITS['DHT'])
 
   @property
   def fast_peers(self):
-    return self.is_set(self.EXTENSION_BITS['Fast peers'])
+    return self.is_set(self._reserved_bits, self.EXTENSION_BITS['Fast peers'])
 
   @property
   def extended(self):
-    return self.is_set(self.EXTENSION_BITS['Extension protocol'])
+    return self.is_set(self._reserved_bits, self.EXTENSION_BITS['Extension protocol'])
 
 
 # TODO(wickman) The wire protocol stuff needs to be cleaned up a little.
@@ -132,9 +132,8 @@ class Command(object):
       return ''.join([struct.pack('>I', 9 + piece.length), struct.pack('B', command),
                       struct.pack('>II', piece.index, piece.offset),
                       piece.block])
-    else:
-      raise Peer.BadMessage('Unknown message id: %s' % command)
-    callback()
+
+    raise Peer.BadMessage('Unknown message id: %s' % command)
 
 
 class ConnectionState(object):
@@ -355,7 +354,7 @@ class Peer(object):
     yield gen.Task(self._iostream.write, Command.wire(Command.PIECE, piece))
     self._out.sent(length)
     if callback:
-      self._io_loop.add_callback(callback)
+      self._session.io_loop.add_callback(callback)
 
   @gen.engine
   def _recv_dispatch(self, message_id, message_body, callback=None):
@@ -407,7 +406,7 @@ class Peer(object):
     else:
       raise Peer.BadMessage('Unknown message id: %s' % message_id)
     if callback:
-      self._io_loop.add(callback)
+      self._session.io_loop.add(callback)
 
   def disconnect(self):
     log.debug('Disconnecting from [%s]' % self._id)

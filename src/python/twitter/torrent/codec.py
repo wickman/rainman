@@ -1,4 +1,3 @@
-from twitter.common import log
 from twitter.common.lang import Compatibility
 
 """

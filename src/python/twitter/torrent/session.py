@@ -3,19 +3,16 @@ import datetime
 import errno
 import functools
 import hashlib
-import random
 import socket
 import struct
 import tempfile
-import threading
-import time
 import urllib
 
 from twitter.common import log
-from twitter.common.quantity import Amount, Time, Data
+from twitter.common.quantity import Amount, Time
 
 import tornado.ioloop
-from tornado import gen, httpclient
+from tornado import httpclient
 from tornado.netutil import TCPServer
 from tornado.iostream import IOStream
 
@@ -263,10 +260,6 @@ class Session(object):
   @property
   def pieces(self):
     return self._pieces
-
-  @property
-  def rarest(self):
-    return self._rarest
 
   def has(self, index):
     return self._bitfield[index]

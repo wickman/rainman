@@ -1,4 +1,5 @@
 import datetime
+import random
 import time
 
 from twitter.common import log

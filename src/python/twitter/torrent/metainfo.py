@@ -2,7 +2,6 @@ import errno
 import hashlib
 import math
 import os
-import tempfile
 
 from twitter.common.collections import OrderedSet
 from twitter.common.quantity import Amount, Data

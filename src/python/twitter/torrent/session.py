@@ -3,6 +3,7 @@ import datetime
 import errno
 import functools
 import hashlib
+import random
 import socket
 import struct
 import tempfile
@@ -19,12 +20,13 @@ from tornado.iostream import IOStream
 from .bitfield import Bitfield
 from .codec import BDecoder
 from .fileset import FileManager, Piece
-from .peer import Peer, PeerId
+from .peer import Peer
+from .scheduler import Scheduler
 
 
 class PieceSet(object):
   RARE_THRESHOLD = 50
-  
+
   def __init__(self, length):
     self._num_owners = array.array('B', [0] * length)
     self._changed_pieces = 0
@@ -181,6 +183,12 @@ class PeerListener(TCPServer):
     self._handler(address, iostream)
 
 
+class PeerId(object):
+  PREFIX = '-TW7712-'  # TWTTR
+  LENGTH = 20
+  @classmethod
+  def generate(cls):
+    return cls.PREFIX + ''.join(random.sample('0123456789abcdef', cls.LENGTH - len(cls.PREFIX)))
 
 
 class Session(object):
@@ -263,7 +271,7 @@ class Session(object):
 
   def has(self, index):
     return self._bitfield[index]
-  
+
   @property
   def bitfield(self):
     return self._bitfield
@@ -353,7 +361,7 @@ class Session(object):
     filter_dead_connections()
     broadcast_new_pieces()
     ping_peers_if_necessary()
-    
+
   def periodic_logging(self):
     for peer in filter(None, self._connections.values()):
       log.info('   = Peer [%s] in: %.1f Mbps  out: %.1f Mbps' % (peer.id,

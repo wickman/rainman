@@ -1,5 +1,4 @@
 import hashlib
-import random
 import struct
 import time
 
@@ -12,15 +11,6 @@ from .bandwidth import Bandwidth
 from .bitfield import Bitfield
 from .metainfo import MetaInfo
 from .fileset import Piece
-
-
-
-class PeerId(object):
-  PREFIX = '-TW7712-'  # TWTTR
-  LENGTH = 20
-  @classmethod
-  def generate(cls):
-    return cls.PREFIX + ''.join(random.sample('0123456789abcdef', cls.LENGTH - len(cls.PREFIX)))
 
 
 class PeerHandshake(object):
@@ -185,7 +175,7 @@ class ConnectionState(object):
   @property
   def interested(self):
     return self._interested
-  
+
   @interested.setter
   @updates_keepalive
   def interested(self, value):
@@ -232,11 +222,11 @@ class Peer(object):
   @property
   def ingress_bytes(self):
     return self._in._sent
-  
+
   @property
   def ingress_bandwidth(self):
     return self._in._bandwidth
-  
+
   @property
   def egress_bandwidth(self):
     return self._out._bandwidth
@@ -278,36 +268,23 @@ class Peer(object):
   @gen.engine
   def run(self):
     while self._active:
-      log.debug('%s run loop starting.' % self)
       message_length = struct.unpack('>I', (yield gen.Task(self._iostream.read_bytes, 4)))[0]
       if message_length == 0:
         log.debug('Received keepalive from [%s]' % self._id)
         self._in.ping()
         return
-      log.debug('%s run loop got message.' % self)
       message_body = yield gen.Task(self._iostream.read_bytes, message_length)
       message_id = ord(message_body[0])
-      log.debug('%s run loop dispatch.' % self)
       self._recv_dispatch(message_id, message_body[1:])
 
   @property
   def choked(self):
     return self._out.choked
-    
-  def choke(self):
-    self._in.choked = True
-    log.debug('Sending choke to [%s]' % self._id)
-    self._iostream.write(Command.wire(Command.CHOKE))
-
-  def unchoke(self):
-    self._in.choked = False
-    log.debug('Sending unchoke to [%s]' % self._id)
-    self._iostream.write(Command.wire(Command.UNCHOKE))
 
   @property
   def interested(self):
     return self._out.interested
-  
+
   @interested.setter
   def interested(self, value):
     value = bool(value)
@@ -336,21 +313,32 @@ class Peer(object):
     log.debug('Sending bitfield to [%s]' % self._id)
     self._iostream.write(Command.wire(Command.BITFIELD, bitfield))
 
-  def send_cancel(self, index, begin, length):
-    self._iostream.write(Command.wire(Command.CANCEL, Piece(index, begin, length)))
-  
-  def send_request(self, index, begin, length):
-    self._iostream.write(Command.wire(Command.REQUEST, Piece(index, begin, length)))
+  def send_cancel(self, piece):
+    log.debug('Sending cancel %s to %s' % (piece, self))
+    self._iostream.write(Command.wire(Command.CANCEL, piece))
+
+  def send_request(self, piece):
+    log.debug('Sending request %s to %s' % (piece, self))
+    self._iostream.write(Command.wire(Command.REQUEST, piece))
+
+  def choke(self):
+    self._in.choked = True
+    log.debug('Sending choke to [%s]' % self._id)
+    self._iostream.write(Command.wire(Command.CHOKE))
+
+  def unchoke(self):
+    self._in.choked = False
+    log.debug('Sending unchoke to [%s]' % self._id)
+    self._iostream.write(Command.wire(Command.UNCHOKE))
 
   @gen.engine
-  def send_piece(self, index, begin, length, callback=None):
-    piece = Piece(index, begin, length)
+  def send_piece(self, piece, callback=None):
     if not self._out._interested or self._out._choked:
       log.debug('Skipping send of %s to [%s] (interested:%s, choked:%s)' % (
         piece, self._id, self._out._interested, self._out._choked))
       return
-    piece = Piece(index, begin, length)
-    piece.block = yield gen.Task(self._session.filemanager.read, piece)
+    if not piece.block:
+      piece.block = yield gen.Task(self._session.filemanager.read, piece)
     yield gen.Task(self._iostream.write, Command.wire(Command.PIECE, piece))
     self._out.sent(length)
     if callback:

@@ -5,7 +5,9 @@ python_test_suite(name = 'torrent',
     pants(':test_codec'),
     pants(':test_filemanager'),
     pants(':test_iopool'),
-    pants(':test_sliceset')
+    pants(':test_sliceset'),
+    pants(':test_tdm'),
+    pants(':test_wire')
   ]
 )
 
@@ -36,5 +38,15 @@ python_tests(name = 'test_iopool',
 
 python_tests(name = 'test_sliceset',
   sources = ['test_sliceset.py'],
+  dependencies = [pants('src/python/twitter/torrent')]
+)
+
+python_tests(name = 'test_tdm',
+  sources = ['test_tdm.py'],
+  dependencies = [pants('src/python/twitter/torrent')]
+)
+
+python_tests(name = 'test_wire',
+  sources = ['test_wire.py'],
   dependencies = [pants('src/python/twitter/torrent')]
 )

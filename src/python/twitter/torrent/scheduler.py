@@ -17,15 +17,17 @@ class TimeDecayMap(object):
   """
 
   DEFAULT_WINDOW = Amount(15, Time.SECONDS)
-  
+
   def __init__(self, window=DEFAULT_WINDOW, clock=time):
     self._window = window.as_(Time.SECONDS)
     self._clock = clock
     self._slices = {} # slice => list(peer)
     self._outstanding = 0
-  
+
   @property
   def outstanding(self):
+    """The number of outstanding requests.  This number is only an estimate
+       since request filtering takes place on __getitem__/__contains__"""
     return self._outstanding
 
   def add(self, slice_, peer_id):
@@ -34,7 +36,7 @@ class TimeDecayMap(object):
       self._slices[slice_] = []
     self._slices[slice_].append((self._clock.time(), peer_id))
     self._outstanding += 1
-  
+
   def remove(self, slice_):
     """returns the list of peers to whom this request is outstanding."""
     if slice_ not in self._slices:
@@ -42,7 +44,7 @@ class TimeDecayMap(object):
     requests = [peer for _, peer in self._slices.pop(slice_)]
     self._outstanding -= len(requests)
     return requests
-  
+
   def _filter(self, slice_):
     """Filter expired slices."""
     now = self._clock.time()
@@ -66,7 +68,7 @@ class TimeDecayMap(object):
     if slice_ not in self._slices:
       return []
     return [peer for _, peer in self._slices[slice_]]
-  
+
   def __contains__(self, slice_):
     self._filter(slice_)
     return slice_ in self._slices
@@ -75,7 +77,7 @@ class TimeDecayMap(object):
 class Scheduler(object):
   """
     From BEP-003:
-  
+
     The currently deployed choking algorithm avoids fibrillation by only
     changing who's choked once every ten seconds.  It does reciprocation and
     number of uploads capping by unchoking the four peers which it has the
@@ -91,8 +93,8 @@ class Scheduler(object):
     rotates every 30 seconds.  To give them a decent chance of getting a
     complete piece to upload, new connections are three times as likely to
     start as the current optimistic unchoke as anywhere else in the rotation.
-    
-    
+
+
     Uses:
       session.torrent
       session.pieces
@@ -143,7 +145,7 @@ class Scheduler(object):
       rarest = filter(lambda index: not session_bitfield[index], self._session.pieces.rarest())
       rarest = rarest[:20]
       random.shuffle(rarest)
-      
+
       for piece_index in rarest:
         # find owners of this piece that are not choking us or for whom we've not yet registered
         # intent to download
@@ -167,13 +169,11 @@ class Scheduler(object):
               random_peer.interested = True
               continue
             log.debug('Scheduler requesting %s from peer [%s].' % (subpiece, random_peer))
-            random_peer.send_request(subpiece.index, subpiece.offset, subpiece.length)
+            random_peer.send_request(subpiece)
             self._requests.add(subpiece, random_peer)
 
       now = time.time()
-      log.debug('Scheduler yielding @ %s' % now)
       yield gen.Task(self._session.io_loop.add_timeout, Scheduler.OUTER_YIELD)
-      log.debug('Scheduler unyielding @ %s = %.3fms later.' % (time.time(), 1000*(time.time() - now)))
 
   def received(self, piece, from_peer):
     if piece not in self._requests:
@@ -181,7 +181,7 @@ class Scheduler(object):
     for peer in self._requests.remove(piece):
       if peer != from_peer:
         log.debug('Sending cancellation to peer [%s]' % peer.id)
-        peer.send_cancel(piece.index, piece.offset, piece.length)
-    
+        peer.send_cancel(piece)
+
   def stop(self):
     self._active = False

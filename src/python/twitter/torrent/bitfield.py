@@ -5,15 +5,22 @@ import random
 class Bitfield(object):
   """Naive implementation of a vector of booleans with __getitem__ and __setitem__."""
 
-  def __init__(self, length, default=False):
+  @staticmethod
+  def from_bytes(byte_array):
+    return Bitfield(len(byte_array) * 8, initializer=byte_array)
+
+  def __init__(self, length, default=False, initializer=None):
     self._length = length
     num_bytes, leftover_bits = divmod(length, 8)
-    self._array = array.array('B',
-      chr(255 if default else 0) * (num_bytes + (leftover_bits > 0)))
+    initializer = initializer or chr(255 if default else 0) * (num_bytes + (leftover_bits > 0))
+    self._array = array.array('B', initializer)
 
   @property
   def num_bytes(self):
     return len(self._array)
+
+  def __eq__(self, other):
+    return self._array == other._array
 
   def as_bytes(self):
     """Returns the bitfield in byte array form."""

@@ -9,7 +9,7 @@ class Bitfield(object):
     self._length = length
     num_bytes, leftover_bits = divmod(length, 8)
     self._array = array.array('B',
-      chr(255 if default else 0) * (num_bytes + (1 if leftover_bits else 0)))
+      chr(255 if default else 0) * (num_bytes + (leftover_bits > 0)))
 
   @property
   def num_bytes(self):
@@ -24,23 +24,26 @@ class Bitfield(object):
     for k in range(len(value)):
       self._array[k] = ord(value[k])
 
+  # TODO(wickman) Make a SafeBitfield variant of this class with proper index checks
   def __getitem__(self, index):
-    if not isinstance(index, int):
-      raise TypeError
-    byte_index, bit_index = divmod(index, 8)
-    if byte_index >= len(self._array):
-      raise IndexError
+    # if not isinstance(index, int):
+    #   raise TypeError
+    byte_index = (index / 8)  # this is much faster than caling divmod(...)
+    bit_index = index % 8
+    # if byte_index >= len(self._array):
+    #   raise IndexError
     byte = self._array[byte_index]
     return True if (byte & (1 << bit_index)) else False
 
   def __setitem__(self, index, value):
-    if not isinstance(index, int):
-      raise TypeError
-    if not isinstance(value, bool):
-      raise TypeError
-    byte_index, bit_index = divmod(index, 8)
-    if byte_index >= len(self._array):
-      raise IndexError
+    # if not isinstance(index, int):
+    #   raise TypeError
+    # if not isinstance(value, bool):
+    #   raise TypeError
+    byte_index = (index / 8)
+    bit_index = index % 8
+    # if byte_index >= len(self._array):
+    #   raise IndexError
     if value:
       self._array[byte_index] |= (1 << bit_index)
     else:

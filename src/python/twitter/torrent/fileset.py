@@ -282,6 +282,8 @@ class FileManager(object):
     return slice(start, stop)
 
   def update_cache(self, index):
+    # TODO(wickman)  Cache this filehandle and do seek/write/flush.  It current takes
+    # 1ms per call.
     with open(self.hashfile, 'r+b') as fp:
       fp.seek(index * 20)
       fp.write(self._actual_pieces[index])
@@ -369,6 +371,10 @@ class FileManager(object):
       Returns immediately, calls callback with no parameters when the write
       (and hash cache flush) finishes.
     """
+    if self.to_slice(piece.index, piece.offset, piece.length) in self._sliceset:
+      log.debug('Dropping dupe write(%s)' % piece)
+      self._io_loop.add_callback(callback)
+
     slices = []
     offset = 0
     for slice_ in self._fileset.iter_slices(piece.index, piece.offset, piece.length):

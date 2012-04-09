@@ -3,6 +3,7 @@ python_binary(
   source = 'client.py',
   dependencies = [
     pants('src/python/twitter/common/app'),
+    pants('src/python/twitter/common/app/modules:exceptions'),
     pants('src/python/twitter/torrent')
   ]
 )

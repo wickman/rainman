@@ -32,7 +32,7 @@ class TimeDecayMap(object):
     has been requested.
   """
 
-  DEFAULT_WINDOW = Amount(5, Time.SECONDS)
+  DEFAULT_WINDOW = Amount(15, Time.SECONDS)
   
   def __init__(self, window=DEFAULT_WINDOW, clock=time):
     self._window = window.as_(Time.SECONDS)
@@ -89,28 +89,37 @@ class TimeDecayMap(object):
 
 
 class PieceSet(object):
+  RARE_THRESHOLD = 50
+  
   def __init__(self, length):
     self._num_owners = array.array('B', [0] * length)
+    self._changed_pieces = 0
+    self._rarest = None
 
-  def have(self, index):
-    self._num_owners[index] += 1
+  def have(self, index, value=True):
+    self._changed_pieces += 1
+    self._num_owners[index] += int(value)
 
   def add(self, bitfield):
     for k in range(len(bitfield)):
-      self._num_owners[k] += bitfield[k]
+      if bitfield[k]:
+        self.have(k)
 
   def remove(self, bitfield):
     for k in range(len(bitfield)):
-      self._num_owners[k] -= bitfield[k]
+      if bitfield[k]:
+        self.have(k, False)
 
   # TODO(wickman) Fix this if it proves to be too slow.
   def rarest(self, count=None, owned=None):
-    def exists_but_not_owned(pair):
-      index, count = pair
-      return count > 0 and (not owned or not owned[index])
-    rarest_pieces = sorted(filter(exists_but_not_owned, enumerate(self._num_owners)),
-                           key=lambda val: val[1])
-    return [val[0] for val in (rarest_pieces[:count] if count else rarest_pieces)]
+    if not self._rarest or self._changed_pieces >= PieceSet.RARE_THRESHOLD:
+      def exists_but_not_owned(pair):
+        index, count = pair
+        return count > 0 and (not owned or not owned[index])
+      self._rarest = sorted(filter(exists_but_not_owned, enumerate(self._num_owners)),
+                            key=lambda val: val[1])
+      self._changed_pieces = 0
+    return [val[0] for val in (self._rarest[:count] if count else self._rarest)]
 
 
 class PeerSet(object):
@@ -257,20 +266,29 @@ class Scheduler(object):
     rotates every 30 seconds.  To give them a decent chance of getting a
     complete piece to upload, new connections are three times as likely to
     start as the current optimistic unchoke as anywhere else in the rotation.
+    
+    
+    Uses:
+      session.torrent
+      session.pieces
+      session.bitfield
+      session.filemanager
   """
   # Scheduling values
-  SCHEDULING_INTERVAL  = Amount(1000, Time.MILLISECONDS)
-  TARGET_PEER_EGRESS   = Amount(2, Data.MB) # per second.
-  MAX_UNCHOKED_PEERS   = 5
-  MAX_PEERS            = 50
-  MAX_REQUESTS         = 100
-  REQUEST_SIZE         = Amount(16, Data.KB)
+  TARGET_PEER_EGRESS = Amount(2, Data.MB) # per second.
+  MAX_UNCHOKED_PEERS = 5
+  MAX_PEERS          = 50
+  MAX_REQUESTS       = 100
+  REQUEST_SIZE       = Amount(16, Data.KB)
+  OUTER_YIELD = datetime.timedelta(0, 0, Amount(10, Time.MILLISECONDS).as_(Time.MICROSECONDS))
+  INNER_YIELD = datetime.timedelta(0, 0, Amount(1, Time.MILLISECONDS).as_(Time.MICROSECONDS))
 
   def __init__(self, session):
     self._session = session
     self._requests = TimeDecayMap()
     self._schedules = 0
     self._timer = None
+    self._active = True
 
   def piece_size(self, index):
     num_pieces, leftover = divmod(self._session.torrent.info.length,
@@ -289,40 +307,48 @@ class Scheduler(object):
     for k in range(0, ps, request_size):
       yield Piece(index, k, request_size if k + request_size <= ps else ps % request_size)
 
+  @gen.engine
   def schedule(self):
-    self._schedules += 1
-    def debug(msg):
-      if self._schedules % 50 == 0:
-        log.debug(msg)
-    debug('Scheduler pass %d.' % self._schedules)
-    if self._schedules % 50 == 0:
-      self.recalculate_rare_pieces()
-
     def to_slice(piece):
       start = piece.index * self._session.torrent.info.piece_size + piece.offset
       return slice(start, start + piece.length)
 
-    for piece_index in self._session.rarest:
-      log.debug('Rarest piece: %s' % piece_index)
-      if self._session.has(piece_index):
-        continue
-      # find owners of this piece that are not choking us or for whom we've not yet registered
-      # intent to download
-      owners = [peer for peer in self._session.owners(piece_index)
-                if not peer.choked or not peer.interested]
-      if not owners: continue
-      for subpiece in list(self.split_piece(piece_index)):
-        if to_slice(subpiece) not in self._session.filemanager.slices and subpiece not in self._requests:
-          if self._requests.outstanding > Scheduler.MAX_REQUESTS:
-            log.debug('Hit max requests, waiting.')
-            return
-          random_peer = random.choice(owners)
-          if random_peer.choked:
-            random_peer.interested = True
-            continue
-          log.debug('Scheduler requesting %s from peer [%s].' % (subpiece, random_peer))
-          random_peer.send_request(subpiece.index, subpiece.offset, subpiece.length)
-          self._requests.add(subpiece, random_peer)
+    while self._active:
+      session_bitfield = self._session.bitfield
+      rarest = filter(lambda index: not session_bitfield[index], self._session.pieces.rarest())
+      rarest = rarest[:20]
+      random.shuffle(rarest)
+      
+      for piece_index in rarest:
+        # find owners of this piece that are not choking us or for whom we've not yet registered
+        # intent to download
+        owners = [peer for peer in self._session.owners(piece_index)]
+        if not owners:
+          continue
+        # don't bother scheduling unless there are unchoked peers or peers
+        # we have not told we are interested
+        if len([peer for peer in owners if not peer.choked or not peer.interested]) == 0:
+          continue
+        if self._requests.outstanding > Scheduler.MAX_REQUESTS:
+          log.debug('Hit max requests, waiting.')
+          yield gen.Task(self._session.io_loop.add_timeout, Scheduler.INNER_YIELD)
+        for subpiece in list(self.split_piece(piece_index)):
+          if to_slice(subpiece) not in self._session.filemanager.slices and subpiece not in self._requests:
+            random_peer = random.choice(owners)
+            if random_peer.choked:
+              if not random_peer.interested:
+                log.debug('Want to request %s from %s but we are choked, setting interested.' % (
+                 subpiece, random_peer))
+              random_peer.interested = True
+              continue
+            log.debug('Scheduler requesting %s from peer [%s].' % (subpiece, random_peer))
+            random_peer.send_request(subpiece.index, subpiece.offset, subpiece.length)
+            self._requests.add(subpiece, random_peer)
+
+      now = time.time()
+      log.debug('Scheduler yielding @ %s' % now)
+      yield gen.Task(self._session.io_loop.add_timeout, Scheduler.OUTER_YIELD)
+      log.debug('Scheduler unyielding @ %s = %.3fms later.' % (time.time(), 1000*(time.time() - now)))
 
   def received(self, piece, from_peer):
     if piece not in self._requests:
@@ -332,20 +358,15 @@ class Scheduler(object):
         log.debug('Sending cancellation to peer [%s]' % peer.id)
         peer.send_cancel(piece.index, piece.offset, piece.length)
     
-  def start(self):
-    self._timer = tornado.ioloop.PeriodicCallback(self.schedule,
-        Scheduler.SCHEDULING_INTERVAL.as_(Time.MILLISECONDS), self._session.io_loop)
-    self._timer.start()
-
   def stop(self):
-    self._timer.stop()
+    self._active = False
 
 
 class Session(object):
   # Retry values
-  PEER_RETRY_INTERVAL  = Amount(30, Time.SECONDS)
+  PEER_RETRY_INTERVAL  = Amount(10, Time.SECONDS)
   MAINTENANCE_INTERVAL = Amount(200, Time.MILLISECONDS)
-  LOGGING_INTERVAL     = Amount(10, Time.SECONDS)
+  LOGGING_INTERVAL     = Amount(1, Time.SECONDS)
 
   def __init__(self, torrent, chroot=None, port=None, io_loop=None):
     self._torrent = torrent
@@ -365,9 +386,7 @@ class Session(object):
       self._bitfield[k] = self._filemanager.have(k)
     log.debug('Torrent says number of pieces is: %s' % self._torrent.info.num_pieces)
     self._pieces = PieceSet(self._torrent.info.num_pieces)
-    self._rarest = self._pieces.rarest()
     self._scheduler = Scheduler(self)
-
 
   # ---- properties
 
@@ -427,6 +446,10 @@ class Session(object):
 
   def has(self, index):
     return self._bitfield[index]
+  
+  @property
+  def bitfield(self):
+    return self._bitfield
 
   def owners(self, index):
     return [peer for peer in filter(None, self._connections.values()) if peer.bitfield[index]]
@@ -439,6 +462,7 @@ class Session(object):
       log.debug('  - already seen peer, skipping.')
       if iostream: iostream.close()
       return
+    log.debug('Setting self._connections[%s] = None' % repr(address))
     self._connections[address] = None
     new_peer = Peer(address, self, functools.partial(self._add_peer_cb, address))
     if iostream is None:
@@ -447,20 +471,22 @@ class Session(object):
     new_peer.handshake(iostream)
 
   def _add_peer_cb(self, address, peer, succeeded):
-    log.debug('Add peer callback: %s:%s' % address)
+    log.debug('Add peer callback: %s:%s [peer value: %s]' % (address[0], address[1], peer))
     if succeeded:
       log.info('Session [%s] added peer %s:%s [%s]' % (self._peer_id, address[0], address[1],
           peer.id))
       # TODO(wickman) Check to see if the connected_peer is still connected, and replace if
       # it has expired.
-      for address, connected_peer in self._connections.items():
+      for connected_peer in self._connections.values():
         if connected_peer and peer.id == connected_peer.id:
           log.info('Session already established with %s, disconnecting new one.' % peer.id)
           peer.disconnect()
           break
       else:
         peer.send_bitfield(self._bitfield)
+        log.debug('Setting self._connections[%s] = %s' % (repr(address), peer))
         self._connections[address] = peer
+        log.info('Starting ioloop for %s' % peer)
         self._io_loop.add_callback(peer.run)
     else:
       log.debug('Session [%s] failed to negotiate with %s:%s' % (self._peer_id,
@@ -470,12 +496,10 @@ class Session(object):
         if address not in self._connections or self._connections[address] is not None:
           log.error('Unexpected connection state for %s!' % address)
         else:
+          log.debug('Popping self._connections[%s]' % repr(address))
           self._connections.pop(address, None)
       self._io_loop.add_timeout(datetime.timedelta(0, self.PEER_RETRY_INTERVAL.as_(Time.SECONDS)),
           expire_retry)
-
-  def recalculate_rare_pieces(self):
-    self._rarest = self._pieces.rarest(owned=self._bitfield)
 
   def maintenance(self):
     def add_new_connections():
@@ -490,6 +514,7 @@ class Session(object):
           log.debug('Garbage collecting peer [%s]' % peer.id)
           dead.add(address)
       for address in dead:
+        log.debug('Popping self._connections[%s] in filter_dead_connections' % repr(address))
         peer = self._connections.pop(address)
         peer.disconnect()
         self._dead.append(peer)
@@ -514,9 +539,9 @@ class Session(object):
     
   def periodic_logging(self):
     for peer in filter(None, self._connections.values()):
-      log.debug('   = Peer [%s] in: %.1f Mbps  out: %.1f Mbps' % (peer.id,
-          peer.ingress_bandwidth.bandwidth * 8. / 1048576,
-          peer.egress_bandwidth.bandwidth * 8. / 1048576))
+      log.info('   = Peer [%s] in: %.1f Mbps  out: %.1f Mbps' % (peer.id,
+         peer.ingress_bandwidth.bandwidth * 8. / 1048576,
+         peer.egress_bandwidth.bandwidth * 8. / 1048576))
 
   def start(self):
     self._listener = PeerListener(self.add_peer, io_loop=self._io_loop, port=self._port)
@@ -528,7 +553,7 @@ class Session(object):
         Session.LOGGING_INTERVAL.as_(Time.MILLISECONDS), self._io_loop)
     self._maintenance_timer.start()
     self._logging_timer.start()
-    self._scheduler.start()
+    self._scheduler.schedule()
     self._io_loop.start()
 
   def stop(self):
@@ -536,4 +561,5 @@ class Session(object):
     self._maintenance_timer.stop()
     self._logging_timer.start()
     self._filemanager.stop()
+    self._scheduler.stop()
     self._io_loop.stop()

@@ -220,7 +220,7 @@ class Peer(object):
     self._out = ConnectionState()
 
   def __str__(self):
-    return 'Peer(%s)' % self._id
+    return 'Peer(%s iostream:%s)' % (self._id, self._iostream)
 
   @property
   def bitfield(self):
@@ -279,13 +279,16 @@ class Peer(object):
   @gen.engine
   def run(self):
     while self._active:
+      log.debug('%s run loop starting.' % self)
       message_length = struct.unpack('>I', (yield gen.Task(self._iostream.read_bytes, 4)))[0]
       if message_length == 0:
         log.debug('Received keepalive from [%s]' % self._id)
         self._in.ping()
         return
+      log.debug('%s run loop got message.' % self)
       message_body = yield gen.Task(self._iostream.read_bytes, message_length)
       message_id = ord(message_body[0])
+      log.debug('%s run loop dispatch.' % self)
       self._recv_dispatch(message_id, message_body[1:])
 
   @property
@@ -381,7 +384,6 @@ class Peer(object):
           self._id, sum((self._bitfield[k] for k in range(len(self._bitfield))), 0),
           len(self._bitfield)))
       self._session.pieces.add(self._bitfield)
-      self._session.recalculate_rare_pieces()
     elif message_id == Command.REQUEST:
       index, begin, length = struct.unpack('>III', message_body)
       piece = Piece(index, begin, length)

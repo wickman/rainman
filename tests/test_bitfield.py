@@ -1,6 +1,6 @@
 import pytest
 import random
-from twitter.torrent.bitfield import Bitfield
+from rainman.bitfield import Bitfield
 
 def test_corners():
   bf = Bitfield(0)

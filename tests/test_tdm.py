@@ -1,5 +1,5 @@
 from twitter.common.quantity import Amount, Time
-from twitter.torrent.scheduler import TimeDecayMap
+from rainman.scheduler import TimeDecayMap
 
 class TestClock(object):
   def __init__(self, initial=0):

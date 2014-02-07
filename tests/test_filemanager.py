@@ -5,7 +5,7 @@ import random
 import struct
 import tempfile
 
-from twitter.torrent.fileset import FileManager, FileSet
+from rainman.fileset import FileManager, FileSet
 
 
 def test_bad_input():

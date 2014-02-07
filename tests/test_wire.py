@@ -1,6 +1,6 @@
-from twitter.torrent.bitfield import Bitfield
-from twitter.torrent.fileset import Piece
-from twitter.torrent.wire import Command, PeerChannel
+from rainman.bitfield import Bitfield
+from rainman.fileset import Piece
+from rainman.wire import Command, PeerChannel
 
 class TestIOStream(object):
   def __init__(self):

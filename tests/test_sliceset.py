@@ -1,5 +1,5 @@
 import pytest
-from twitter.torrent.sliceset import SliceSet
+from rainman.sliceset import SliceSet
 
 
 def make_single(slc):

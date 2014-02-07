@@ -1,7 +1,7 @@
 from tornado.testing import AsyncTestCase
 
 # we should have a full-on IOPool test too, but this is easier for now
-from twitter.torrent.fileset import (
+from rainman.fileset import (
    FileManager,
    FileSet,
    Piece)

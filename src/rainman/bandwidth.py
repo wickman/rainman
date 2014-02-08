@@ -1,13 +1,14 @@
-from collections import deque
+from collections import deque, namedtuple
 import time
 
 from twitter.common.quantity import Amount, Time
 
 
+BandwidthSample = namedtuple('BandwidthSample', 'timestamp value')
+
+
 class Bandwidth(object):
   """Naive windowing bandwidth calculator."""
-
-  TIME, VALUE = 0, 1
 
   def __init__(self, window=Amount(1, Time.MINUTES), denominator=Time.SECONDS, clock=time):
     """
@@ -25,14 +26,14 @@ class Bandwidth(object):
 
   def _filter(self, now=None):
     now = now or self._clock.time()
-    while len(self._samples) > 0 and now - self._samples[0][Bandwidth.TIME] >= self._window:
+    while len(self._samples) > 0 and now - self._samples[0].timestamp >= self._window:
       evict = self._samples.popleft()
-      self._aggregate -= evict[Bandwidth.VALUE]
+      self._aggregate -= evict.value
 
   def add(self, sample):
     now = self._clock.time()
     self._filter(now)
-    self._samples.append((now, sample))
+    self._samples.append(BandwidthSample(now, sample))
     self._aggregate += sample
 
   @property

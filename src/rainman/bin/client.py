@@ -7,13 +7,25 @@ from rainman.metainfo import Torrent
 from twitter.common import app
 
 
-app.add_option('--torrent', metavar='FILENAME', default=None,
-               help='Torrent filename to start session on.')
-app.add_option('--chroot', metavar='PATH', default=None, dest='chroot',
-               help='Directory that roots the torrent.  Temporary directory will be '
-                    'created if unspecified.')
-app.add_option('--interactive', default=False, action='store_true',
-               help='Drop into an interpreter before activating session.')
+app.add_option(
+    '--torrent',
+    metavar='FILENAME',
+    default=None,
+    help='Torrent filename to start session on.')
+
+app.add_option(
+    '--chroot',
+    metavar='PATH',
+    default=None,
+    dest='chroot',
+    help='Directory that roots the torrent.  Temporary directory will be '
+          'created if unspecified.')
+
+app.add_option(
+    '-i', '--interactive',
+    default=False,
+    action='store_true',
+    help='Drop into an interpreter before activating session.')
 
 
 def main(args, options):

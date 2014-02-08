@@ -8,7 +8,7 @@ from .iopool import IOPool
 from .sliceset import SliceSet
 
 import tornado.gen
-from twitter.common.dirutil import safe_mkdir, safe_rmtree
+from twitter.common.dirutil import safe_mkdir, safe_open, safe_rmtree
 from twitter.common import log
 
 
@@ -238,7 +238,7 @@ class FileManager(object):
     assert current_size <= size
     if current_size != size:
       diff = size - current_size
-      with open(filename, 'a+b') as fp:
+      with safe_open(filename, 'a+b') as fp:
         while diff > 0:
           if diff > splat_size:
             fp.write(splat)

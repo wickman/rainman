@@ -4,15 +4,23 @@ import time
 from rainman.codec import BEncoder
 
 from twitter.common import app, log
-from twitter.common.app.modules.http import RootServer
 from twitter.common.http import HttpServer
 from twitter.common.quantity import Amount, Time
 
 
-class TrackerRequest(object):
-  class MalformedRequestError(Exception): pass
+app.add_option(
+    '--port',
+    dest='port',
+    default=8080,
+    type=int,
+    help='The port on which the torrent tracker should be run.')
 
-  REQUIRED_KEYS = set([
+
+class TrackerRequest(object):
+  class Error(Exception): pass
+  class MalformedRequestError(Error): pass
+
+  REQUIRED_KEYS = frozenset([
     'info_hash',
     'peer_id',
     'port',
@@ -87,7 +95,7 @@ class Peer(object):
     self._state = request.get('event', 'active')
 
 
-class Tracker(HttpServer):
+class Tracker(object):
   DEFAULT_INTERVAL = Amount(30, Time.SECONDS)
 
   def __init__(self):
@@ -97,7 +105,7 @@ class Tracker(HttpServer):
   @HttpServer.route('/')
   def main(self):
     try:
-      request = TrackerRequest(self.Request)
+      request = TrackerRequest(HttpServer.request)
     except TrackerRequest.MalformedRequestError as e:
       return BEncoder.encode({
         'failure reason': str(e)
@@ -105,7 +113,7 @@ class Tracker(HttpServer):
     self.update_peers(request)
     self.expire_peers()
     return BEncoder.encode({
-      'interval': int(Tracker.DEFAULT_INTERVAL.as_(Time.SECONDS)),
+      'interval': int(self.DEFAULT_INTERVAL.as_(Time.SECONDS)),
       'peers': [
         { 'id': peer.id,
           'ip': peer.ip,
@@ -136,10 +144,9 @@ class Tracker(HttpServer):
 
 def main(args, options):
   tracker = Tracker()
-  RootServer().mount_routes(tracker)
-  while True:
-    time.sleep(10)
+  server = HttpServer()
+  server.mount_routes(tracker)
+  server.run('0.0.0.0', port=options.port, server='tornado')
 
 
-app.configure(module='twitter.common.app.modules.http', enable=True, framework='tornado')
 app.main()

@@ -1,5 +1,3 @@
-from twitter.common.lang import Compatibility
-
 """
 Encode and decode bencoded data structures.
 
@@ -12,114 +10,98 @@ To use:
   dictionary = BDecoder.decode(byte_array)
 """
 
+from twitter.common.lang import Compatibility
+
+
 class BEncoder(object):
   class Error(Exception): pass
 
-  @staticmethod
-  def assert_type(input, typ):
-    if not isinstance(input, typ):
-      raise BEncoder.Error("Input is of type %s, expected type %s" % (
-        type(input).__name__, typ.__name__))
-
-  @staticmethod
-  def encode_int(input):
-    BEncoder.assert_type(input, int)
+  @classmethod
+  def encode_int(cls, input):
     return 'i%se' % input
 
-  @staticmethod
-  def encode_str(input):
-    BEncoder.assert_type(input, Compatibility.string)
+  @classmethod
+  def encode_str(cls, input):
     return '%d:%s' % (len(input), input)
 
-  @staticmethod
-  def encode_list(input):
-    BEncoder.assert_type(input, list)
-    return 'l%se' % ''.join(BEncoder.encode(element) for element in input)
+  @classmethod
+  def encode_list(cls, input):
+    return 'l%se' % ''.join(cls.encode(element) for element in input)
 
-  @staticmethod
-  def encode_dict(input):
-    BEncoder.assert_type(input, dict)
-    for key in input:
-      BEncoder.assert_type(key, str)
-    return 'd%se' % ''.join(BEncoder.encode(key) + BEncoder.encode(value)
-        for key, value in sorted(input.items()))
+  @classmethod
+  def encode_dict(cls, input):
+    if any(not isinstance(key, Compatibility.string) for key in input):
+      raise cls.Error('Invalid dictionary: not all keys are strings.')
+    return 'd%se' % ''.join(
+        cls.encode(key) + cls.encode(value) for key, value in sorted(input.items()))
 
-  @staticmethod
-  def encode(input):
-    input_type = type(input)
-    if input_type not in BEncoder.INPUT_TYPES:
-      raise BEncoder.Error("Unknown input type: %s" % input_type)
-    return BEncoder.INPUT_TYPES[input_type](input)
-
-
-BEncoder.INPUT_TYPES = {
-  int: BEncoder.encode_int,
-  str: BEncoder.encode_str,
-  list: BEncoder.encode_list,
-  dict: BEncoder.encode_dict
-}
-
-if Compatibility.PY2:
-  BEncoder.INPUT_TYPES[unicode] = BEncoder.encode_str
+  @classmethod
+  def encode(cls, input):
+    if isinstance(input, Compatibility.integer):
+      return cls.encode_int(input)
+    elif isinstance(input, Compatibility.string):
+      return cls.encode_str(input)
+    elif isinstance(input, (list, tuple)):
+      return cls.encode_list(input)
+    elif isinstance(input, dict):
+      return cls.encode_dict(input)
+    raise cls.Error("Unknown input type: %s" % type(input))
 
 
 class BDecoder(object):
   class Error(Exception): pass
 
-  @staticmethod
-  def decode_int(input):
+  @classmethod
+  def decode_int(cls, input):
     assert input[0] == 'i'
     e_index = input.index('e')
     return int(input[1:e_index]), e_index + 1
 
-  @staticmethod
-  def decode_str(input):
+  @classmethod
+  def decode_str(cls, input):
     assert ord(input[0]) >= ord('0') and ord(input[0]) <= ord('9'), 'Got %s' % input[0]
     colon_index = input.index(':')
     str_length = int(input[0:colon_index])
-    return input[colon_index+1:colon_index+1+str_length], colon_index+1+str_length
+    return input[colon_index + 1:colon_index + 1 + str_length], colon_index + 1 + str_length
 
-  @staticmethod
-  def decode_list(input):
+  @classmethod
+  def decode_list(cls, input):
     assert input[0] == 'l'
     offset = 1
     output = []
     while input[offset] != 'e':
-      element, extra = BDecoder.decode(input[offset:])
+      element, extra = cls.decode(input[offset:])
       offset += extra
       output.append(element)
     return output, offset+1
 
-  @staticmethod
-  def decode_dict(input):
+  @classmethod
+  def decode_dict(cls, input):
     assert input[0] == 'd'
     offset = 1
     output = {}
     while input[offset] != 'e':
-      key, extra = BDecoder.decode(input[offset:])
+      key, extra = cls.decode(input[offset:])
       offset += extra
-      value, extra = BDecoder.decode(input[offset:])
+      value, extra = cls.decode(input[offset:])
       offset += extra
       if not isinstance(key, str):
-        raise BDecoder.Error('Dictionary expects keys to be string!')
+        raise cls.Error('Dictionary expects keys to be string!')
       output[key] = value
-    return output, offset+1
+    return output, offset + 1
 
-  @staticmethod
-  def decode(input):
+  @classmethod
+  def decode(cls, input):
     try:
-      if input[0] in BDecoder.INPUT_TYPES:
-        return BDecoder.INPUT_TYPES[input[0]](input)
+      if input[0] == 'i':
+        return cls.decode_int(input)
+      elif input[0] == 'l':
+        return cls.decode_list(input)
+      elif input[0] == 'd':
+        return cls.decode_dict(input)
       else:
-        return BDecoder.decode_str(input)
+        return cls.decode_str(input)
     except IndexError:
-      raise BDecoder.Error('Unexpected end of stream decoding integer')
+      raise cls.Error('Unexpected end of stream decoding integer')
     except ValueError:
-      raise BDecoder.Error('Value does not appear to be integer')
-
-
-BDecoder.INPUT_TYPES = {
-  'i': BDecoder.decode_int,
-  'l': BDecoder.decode_list,
-  'd': BDecoder.decode_dict
-}
+      raise cls.Error('Value does not appear to be integer')

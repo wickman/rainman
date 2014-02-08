@@ -1,8 +1,8 @@
 import code
 import time
 
-from rainman.session import Session, PeerSet
 from rainman.metainfo import Torrent
+from rainman.session import Session, PeerSet
 
 from twitter.common import app
 

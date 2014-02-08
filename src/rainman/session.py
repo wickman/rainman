@@ -11,7 +11,7 @@ import urllib
 
 from .bitfield import Bitfield
 from .codec import BDecoder
-from .fileset import FileManager, Piece
+from .filemanager import FileManager
 from .peer import Peer
 from .scheduler import Scheduler
 
@@ -192,7 +192,6 @@ class PeerId(object):
 
 
 class Session(object):
-  # Retry values
   PEER_RETRY_INTERVAL  = Amount(10, Time.SECONDS)
   MAINTENANCE_INTERVAL = Amount(200, Time.MILLISECONDS)
   LOGGING_INTERVAL     = Amount(1, Time.SECONDS)
@@ -209,7 +208,8 @@ class Session(object):
     self._maintenance_timer = None
     self._logging_timer = None
     self._chroot = chroot or tempfile.mkdtemp()
-    self._filemanager = FileManager.from_session(self)
+    self._filemanager = FileManager.from_torrent(
+        self._torrent, chroot=self._chroot, io_loop=self._io_loop)
     self._bitfield = Bitfield(torrent.info.num_pieces)
     for k in range(torrent.info.num_pieces):
       self._bitfield[k] = self._filemanager.have(k)
@@ -280,7 +280,7 @@ class Session(object):
     return [peer for peer in filter(None, self._connections.values()) if peer.bitfield[index]]
 
   # ----- mutations
-
+  @gen.coroutine
   def add_peer(self, address, iostream=None):
     log.info('Adding peer: %s (%s)' % (address, 'inbound' if iostream else 'outbound'))
     if address in self._connections:
@@ -293,9 +293,11 @@ class Session(object):
     if iostream is None:
       iostream = IOStream(socket.socket(socket.AF_INET, socket.SOCK_STREAM), io_loop=self.io_loop)
       iostream.connect(address)
-    new_peer.handshake(iostream)
+    success = yield gen.Task(new_peer.handshake, iostream)
+    yield gen.Task(self.validate_peer, new_peer.address, new_peer, succeeded)
 
-  def _add_peer_cb(self, address, peer, succeeded):
+  @gen.coroutine
+  def validate_peer(self, address, peer, succeeded):
     log.debug('Add peer callback: %s:%s [peer value: %s]' % (address[0], address[1], peer))
     if succeeded:
       log.info('Session [%s] added peer %s:%s [%s]' % (self._peer_id, address[0], address[1],
@@ -308,7 +310,7 @@ class Session(object):
           peer.disconnect()
           break
       else:
-        peer.send_bitfield(self._bitfield)
+        yield gen.Task(peer.send_bitfield, self._bitfield)
         log.debug('Setting self._connections[%s] = %s' % (repr(address), peer))
         self._connections[address] = peer
         log.info('Starting ioloop for %s' % peer)
@@ -323,7 +325,8 @@ class Session(object):
         else:
           log.debug('Popping self._connections[%s]' % repr(address))
           self._connections.pop(address, None)
-      self._io_loop.add_timeout(datetime.timedelta(0, self.PEER_RETRY_INTERVAL.as_(Time.SECONDS)),
+      self._io_loop.add_timeout(
+          datetime.timedelta(0, self.PEER_RETRY_INTERVAL.as_(Time.SECONDS)),
           expire_retry)
 
   def maintenance(self):

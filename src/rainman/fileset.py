@@ -1,25 +1,13 @@
-import errno
 import hashlib
+import math
 import os
 import struct
-import tempfile
 
-from .iopool import IOPool
-from .sliceset import SliceSet
-
-import tornado.gen
-from twitter.common.dirutil import safe_mkdir, safe_open, safe_rmtree
-from twitter.common import log
-
-
-__all__ = ('FileSet', 'FileIOPool')
+from twitter.common.lang import Compatibility
 
 
 class fileslice(object):
-  """
-    file-annotated slice with read/write methods.
-    unfortunately slice is not subclassable, so we just duck-type as much as possible.
-  """
+  """A :class:`slice` over a file."""
   class Error(Exception): pass
   class ReadError(Error): pass
   class WriteError(Error): pass
@@ -54,12 +42,12 @@ class fileslice(object):
       fp.seek(self.start)
       data = fp.read(self.length)
       if len(data) != self.length:
-        raise fileslice.ReadError('File is truncated at this slice!')
+        raise self.ReadError('File is truncated at this slice!')
       return data
 
   def write(self, data):
     if len(data) != (self.stop - self.start):
-      raise fileslice.WriteError('Block must be of appropriate size!')
+      raise self.WriteError('Block must be of appropriate size!')
     with open(self._filename, 'r+b') as fp:
       fp.seek(self.start)
       fp.write(data)
@@ -68,37 +56,44 @@ class fileslice(object):
     return 'fileslice(%r[%r,%r])' % (self._filename, self.start, self.stop)
 
 
-class Piece(object):
-  def __init__(self, index, offset, length, block=None):
+# TODO(wickman) Consider using namedtuple
+class Request(object):
+  __slots__ = ('index', 'offset', 'length')
+
+  def __init__(self, index, offset, length):
     self.index = index
     self.offset = offset
     self.length = length
-    self.block = block
 
   def __hash__(self):
     return hash((self.index, self.offset, self.length))
 
   def __str__(self):
-    return 'Piece(%s[%s:%s]%s)' % (
-      self.index, self.offset, self.offset+self.length, '*' if self.block else '')
+    return 'Request(%s[%s:%s]%s)' % (self.index, self.offset, self.offset + self.length)
 
-  @property
-  def is_request(self):
-    return self.block is None
-
-  # Do not consider the block in equality.
   def __eq__(self, other):
     return (self.index == other.index and
             self.offset == other.offset and
             self.length == other.length)
 
 
+class Piece(Request):
+  __slots__ = ('block',)
+
+  def __init__(self, index, offset, length, block):
+    super(Piece, self).__init__(index, offset, length)
+    self.block = block
+
+  def __str__(self):
+    return 'Piece(%s[%s:%s]*)' % (self.index, self.offset, self.offset + self.length)
+
+
 class FileSet(object):
+  """A logical concatenation of files, chunked into chunk sizes."""
+
   def __init__(self, files, piece_size):
-    """
-      files: ordered list of (filename, filesize) pairs
-      chroot (optional): location to store (or resume) this fileset.
-                         if not supplied, create a new one.
+    """:param files: Ordered list of (filename, filesize) tuples.
+       :param piece_size: Size of pieces in bytes.
     """
     # Assert sanity of input and compute filename of on-disk piece cache.
     if not (isinstance(piece_size, int) and piece_size > 0):
@@ -109,16 +104,16 @@ class FileSet(object):
         fn, fs = file_pair
       except (ValueError, TypeError):
         raise ValueError('Expected files to be a list of file, size pairs.')
-      if not isinstance(fn, str):
+      if not isinstance(fn, Compatibility.string):
         raise ValueError('Expect filenames to be strings.')
-      if not (isinstance(fs, int) and fs >= 0):
+      if not isinstance(fs, Compatibility.integer) or fs <= 0:
         raise ValueError('Expected filesize to be a non-negative integer.')
       sha.update(fn)
       sha.update(struct.pack('>q', fs))
     self._hash = sha.hexdigest()
     self._files = files
     self._piece_size = piece_size
-    self._size = sum((pr[1] for pr in self._files), 0)
+    self._size = sum(pr[1] for pr in self._files)
 
   @property
   def size(self):
@@ -130,7 +125,7 @@ class FileSet(object):
 
   @property
   def num_pieces(self):
-    return self.size / self._piece_size
+    return int(math.ceil(1. * self.size / self._piece_size))
 
   @property
   def hash(self):
@@ -159,258 +154,3 @@ class FileSet(object):
 
   def __iter__(self):
     return iter(self._files)
-
-
-class NullCallbackDispatcher(object):
-  def __init__(self, callback=None):
-    self._callback = callback
-
-  def __enter__(self):
-    pass
-
-  def __exit__(self, type, value, traceback):
-    if self._callback:
-      self._callback()
-    return False
-
-
-class FileManager(object):
-  """
-    Translate Fileset read/write operations to IOLoop operations via a ThreadPool.
-  """
-  DEFAULT_SPLAT_BYTES = 64*1024
-
-  @staticmethod
-  def from_session(session):
-    fs = FileSet([(mif.name, mif.length) for mif in session.torrent.info.files],
-                 session.torrent.info.piece_size)
-    return FileManager(fs, list(session.torrent.info.pieces), chroot=session.chroot,
-        io_loop=session.io_loop)
-
-  def __init__(self, fileset, piece_hashes=None, chroot=None, io_loop=None):
-    self._fileset = fileset
-    self._pieces = piece_hashes or [chr(0) * 20] * self._fileset.num_pieces
-    self._actual_pieces = []
-    self._fileset = fileset
-    self._sliceset = SliceSet()
-    self._chroot = chroot or tempfile.mkdtemp()
-    safe_mkdir(self._chroot)
-    self._io_loop = io_loop or tornado.ioloop.IOLoop.instance()
-    self._iopool = IOPool(io_loop=self._io_loop)
-    self._initialize()
-
-  #  --- piece initialization
-
-  @property
-  def slices(self):
-    return self._sliceset
-
-  @property
-  def total_size(self):
-    return sum((fp[1] for fp in self._fileset), 0)
-
-  @property
-  def assembled_size(self):
-    # test this
-    assembled = 0
-    for index in range(len(self._pieces) - 1):
-      if self.have(index): assembled += self._fileset.piece_size
-    if self.have(len(self._pieces) - 1):
-      _, leftover = divmod(self.total_size, self._fileset.piece_size)
-      assembled += self._fileset.piece_size if not leftover else leftover
-    return assembled
-
-  @staticmethod
-  def safe_size(filename):
-    try:
-      return os.path.getsize(filename)
-    except OSError as e:
-      if e.errno == errno.ENOENT:
-        return 0
-      else:
-        raise
-
-  @staticmethod
-  def fill(filename, size, splat=None):
-    splat = splat or chr(0) * FileManager.DEFAULT_SPLAT_BYTES
-    splat_size = len(splat)
-    current_size = FileManager.safe_size(filename)
-    assert current_size <= size
-    if current_size != size:
-      diff = size - current_size
-      with safe_open(filename, 'a+b') as fp:
-        while diff > 0:
-          if diff > splat_size:
-            fp.write(splat)
-            diff -= splat_size
-          else:
-            fp.write(chr(0) * diff)
-            diff = 0
-    return size - current_size
-
-  @property
-  def hashfile(self):
-    return os.path.join(self._chroot, '.%s.pieces' % self._fileset.hash)
-
-  def _initialize(self):
-    touched = 0
-    total_size = 0
-    # zero out files
-    for filename, filesize in self._fileset:
-      fullpath = os.path.join(self._chroot, filename)
-      touched += self.fill(fullpath, filesize)
-      total_size += filesize
-    # load up cached pieces file if it's there
-    if touched == 0 and os.path.exists(self.hashfile):
-      with open(self.hashfile) as fp:
-        self._actual_pieces = fp.read()
-    # or compute it on the fly
-    if len(self._actual_pieces) != self._fileset.num_pieces:
-      self._actual_pieces = list(self.iter_hashes())
-      with open(self.hashfile, 'wb') as fp:
-        fp.write(''.join(self._actual_pieces))
-    # cover the spans that we've succeeded in the sliceset
-    for index in range(self._fileset.num_pieces):
-      if self._actual_pieces[index] == self._pieces[index]:
-        self._sliceset.add(self.to_slice(index, 0, self._fileset.piece_size))
-
-  # ---- helpers
-
-  def to_slice(self, index, begin, length):
-    start = index * self._fileset.piece_size + begin
-    stop  = min(start + length, self._fileset.size)
-    return slice(start, stop)
-
-  def update_cache(self, index):
-    # TODO(wickman)  Cache this filehandle and do seek/write/flush.  It current takes
-    # 1ms per call.
-    with open(self.hashfile, 'r+b') as fp:
-      fp.seek(index * 20)
-      fp.write(self._actual_pieces[index])
-
-  def have(self, index):
-    return self._pieces[index] == self._actual_pieces[index]
-
-  def covers(self, piece):
-    """
-      Whether or not this FileManager contains all pieces covered by this piece slice.
-    """
-    piece_slice = self.to_slice(piece.index, piece.offset, piece.length)
-    piece_start_index = piece_slice.start / self._fileset.piece_size
-    piece_stop_index = piece_slice.stop / self._fileset.piece_size
-    return all(self.have(index) for index in range(piece_start_index, piece_stop_index))
-
-  def iter_slices(self, index, begin, length):
-    """
-      Given (piece index, begin, length), return an iterator over fileslice objects
-      that cover the interval.
-    """
-    piece = self.to_slice(index, begin, length)
-    offset = 0
-    for (fn, fs) in self._fileset.files:
-      if offset + fs <= piece.start:
-        offset += fs
-        continue
-      if offset >= piece.stop:
-        break
-      file = slice(offset, offset + fs)
-      overlap = slice(max(file.start, piece.start), min(file.stop, piece.stop))
-      if overlap.start < overlap.stop:
-        yield fileslice(os.path.join(self._chroot, fn),
-                        slice(overlap.start - offset, overlap.stop - offset))
-      offset += fs
-
-  def iter_hashes(self):
-    """iterate over the sha1 hashes, blocking."""
-    for chunk in self.iter_pieces():
-      yield hashlib.sha1(chunk).digest()
-
-  def iter_pieces(self):
-    """iterate over the pieces backed by this fileset.  blocking."""
-    # TODO(wickman)  Port this over to use the fileslice interface.
-    chunk = ''
-    for fn, _ in self._fileset:
-      with open(os.path.join(self._chroot, fn), 'rb') as fp:
-        while True:
-          addendum = fp.read(self._fileset.piece_size - len(chunk))
-          chunk += addendum
-          if len(chunk) == self._fileset.piece_size:
-            yield chunk
-            chunk = ''
-          if len(addendum) == 0:
-            break
-    if len(chunk) > 0:
-      yield chunk
-
-  # ---- io_loop interface
-
-  def whole_piece(self, index):
-    num_pieces, leftover = divmod(self._fileset.size, self._fileset.piece_size)
-    num_pieces += leftover > 0
-    assert index < num_pieces
-    if not leftover or index < num_pieces - 1:
-      return Piece(index, 0, self._fileset.piece_size)
-    return Piece(index, 0, leftover)
-
-  @tornado.gen.engine
-  def read(self, piece, callback):
-    """
-      Read a Piece (piece) asynchronously.
-      Returns immediately, calls callback(data) when the read is complete.
-    """
-    slices = list(self._fileset.iter_slices(piece.index, piece.offset, piece.length))
-    read_slices = yield [
-        tornado.gen.Task(self._iopool.add, fileslice.read, slice_.rooted_at(self._chroot))
-        for slice_ in slices]
-    callback(''.join(read_slices))
-
-  @tornado.gen.engine
-  def write(self, piece, callback=None):
-    """
-      Write a Piece (piece) asynchronously.
-      Returns immediately, calls callback with no parameters when the write
-      (and hash cache flush) finishes.
-    """
-    if self.to_slice(piece.index, piece.offset, piece.length) in self._sliceset:
-      log.debug('Dropping dupe write(%s)' % piece)
-      self._io_loop.add_callback(callback)
-
-    slices = []
-    offset = 0
-    for slice_ in self._fileset.iter_slices(piece.index, piece.offset, piece.length):
-      slices.append(
-          tornado.gen.Task(self._iopool.add, fileslice.write, slice_.rooted_at(self._chroot),
-                           piece.block[offset : offset+slice_.length]))
-      offset += slice_.length
-    yield slices
-    yield tornado.gen.Task(self.touch, piece.index, piece.offset, piece.length)
-    self._io_loop.add_callback(callback)
-
-  @tornado.gen.engine
-  def touch(self, index, begin, length, callback=None):
-    callback = callback or (lambda x: x)
-    log.debug('FileIOPool.sliceset.add(%s)' % self.to_slice(index, begin, length))
-    self._sliceset.add(self.to_slice(index, begin, length))
-    piece_slice = self.to_slice(index, 0, self._fileset.piece_size)
-    if piece_slice not in self._sliceset:
-      # the piece isn't complete so don't bother with an expensive calculation
-      self._io_loop.add_callback(callback)
-      return
-    log.debug('FileIOPool.touch: Performing SHA1 on %s' % index)
-    self._actual_pieces[index] = hashlib.sha1(
-        (yield tornado.gen.Task(self.read, self.whole_piece(index)))).digest()
-    if self._pieces[index] == self._actual_pieces[index]:
-      log.debug('FileIOPool.touch: Finished piece %s!' % index)
-      self.update_cache(index)
-    else:
-      # the hash was incorrect.  none of this data is good.
-      log.debug('FileIOPool.touch: Corrupt piece %s, erasing extent %s' % (index, piece_slice))
-      self._sliceset.erase(piece_slice)
-    self._io_loop.add_callback(callback)
-
-  def stop(self):
-    self._iopool.stop()
-
-  def destroy(self):
-    safe_rmtree(self._chroot)
-    self.stop()

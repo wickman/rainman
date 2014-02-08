@@ -4,7 +4,8 @@ import random
 import struct
 import tempfile
 
-from rainman.fileset import FileManager, FileSet
+from rainman.fileset import FileSet
+from rainman.filemanager import FileManager
 
 import pytest
 

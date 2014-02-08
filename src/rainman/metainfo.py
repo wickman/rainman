@@ -10,11 +10,11 @@ from twitter.common.quantity import Amount, Data
 
 
 class Torrent(object):
-  @staticmethod
-  def from_file(filename):
+  @classmethod
+  def from_file(cls, filename):
     with open(filename, 'rb') as fp:
       mi, _ = BDecoder.decode(fp.read())
-    return Torrent(mi)
+    return cls(mi)
 
   def __init__(self, d=None):
     self._d = d or {}

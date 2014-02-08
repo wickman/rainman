@@ -1,10 +1,8 @@
 from tornado.testing import AsyncTestCase
 
 # we should have a full-on IOPool test too, but this is easier for now
-from rainman.fileset import (
-   FileManager,
-   FileSet,
-   Piece)
+from rainman.fileset import FileSet, Piece, Request
+from rainman.filemanager import FileManager
 
 
 class TestFileIOPool(AsyncTestCase):
@@ -21,7 +19,7 @@ class TestFileIOPool(AsyncTestCase):
     all_files_size = sum(fp[1] for fp in self.FILES)
 
     # test reads
-    pc = Piece(0, 0, all_files_size)
+    pc = Request(0, 0, all_files_size)
     read_data = []
     def read_done(data):
       read_data.append(data)
@@ -30,22 +28,22 @@ class TestFileIOPool(AsyncTestCase):
     self.wait()
 
     assert len(read_data) == 1 and len(read_data[0]) == all_files_size
-    assert read_data[0] == chr(0) * all_files_size  # by default filesets are zeroed out
+    assert read_data[0] == b'\x00' * all_files_size  # by default filesets are zeroed out
 
     # write
-    pc = Piece(2, 0, 5000, block=chr(1)*5000)
+    pc = Piece(2, 0, 5000, block=b'\x01'*5000)
     def write_done():
       self.stop()
     fm.write(pc, write_done)
     self.wait()
 
     read_data = []
-    fm.read(Piece(0, 0, all_files_size), read_done)
+    fm.read(Request(0, 0, all_files_size), read_done)
     self.wait()
 
     assert len(read_data) == 1 and len(read_data[0]) == all_files_size
-    assert read_data == [
-        chr(0) * 2 * 4096 + chr(1) * 5000 + chr(0) * (all_files_size - 2 * 4096 - 5000)]
+    assert read_data[0] == b''.join([
+        b'\x00' * 2 * 4096,
+        b'\x01' * 5000,
+        b'\x00' * (all_files_size - 2 * 4096 - 5000)])
     fm.destroy()
-
-

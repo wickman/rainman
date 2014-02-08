@@ -4,7 +4,7 @@ import time
 
 from .bandwidth import Bandwidth
 from .bitfield import Bitfield
-from .fileset import Piece
+from .fileset import Piece, Request
 from .metainfo import MetaInfo
 
 from tornado import gen
@@ -42,6 +42,7 @@ class PeerHandshake(object):
       hash = info
     else:
       raise ValueError('Expected MetaInfo or hash, got %s' % repr(info))
+    # XXX(PY3)
     handshake = [chr(len(PeerHandshake.PROTOCOL_STR)), PeerHandshake.PROTOCOL_STR,
                  chr(0) * 8, hash, peer_id if peer_id else '']
     return ''.join(handshake)
@@ -82,47 +83,6 @@ class PeerHandshake(object):
   @property
   def extended(self):
     return self.is_set(self._reserved_bits, self.EXTENSION_BITS['Extension protocol'])
-
-
-# TODO(wickman) The wire protocol stuff needs to be cleaned up a little.
-class Command(object):
-  CHOKE          = 0
-  UNCHOKE        = 1
-  INTERESTED     = 2
-  NOT_INTERESTED = 3
-  HAVE           = 4
-  BITFIELD       = 5
-  REQUEST        = 6
-  PIECE          = 7
-  CANCEL         = 8
-
-  @staticmethod
-  def wire(command, *args):
-    if command in (Command.CHOKE, Command.UNCHOKE, Command.INTERESTED, Command.NOT_INTERESTED):
-      return ''.join([struct.pack('>I', 1), struct.pack('B', command)])
-    elif command == Command.HAVE:
-      assert len(args) == 1
-      return ''.join([struct.pack('>I', 5), struct.pack('B', command), struct.pack('>I', args[0])])
-    elif command == Command.BITFIELD:
-      assert len(args) == 1
-      bitfield = args[0]
-      return ''.join([struct.pack('>I', 1 + bitfield.num_bytes), struct.pack('B', command),
-          bitfield.as_bytes()])
-    elif command in (Command.REQUEST, Command.CANCEL):
-      assert len(args) == 1 and isinstance(args[0], Piece)
-      piece = args[0]
-      assert piece.is_request
-      return ''.join([struct.pack('>I', 13), struct.pack('B', command),
-                      struct.pack('>III', piece.index, piece.offset, piece.length)])
-    elif command == Command.PIECE:
-      assert len(args) == 1 and isinstance(args[0], Piece)
-      piece = args[0]
-      assert not piece.is_request
-      return ''.join([struct.pack('>I', 9 + piece.length), struct.pack('B', command),
-                      struct.pack('>II', piece.index, piece.offset),
-                      piece.block])
-
-    raise Peer.BadMessage('Unknown message id: %s' % command)
 
 
 class ConnectionState(object):
@@ -192,16 +152,17 @@ class ConnectionState(object):
   del updates_keepalive
 
 
+# TODO(wickman) Integrate with wire.py
 class Peer(object):
+  class Error(Exception): pass
   class BadMessage(Exception): pass
 
-  def __init__(self, address, session, handshake_cb=None):
+  def __init__(self, address, session):
     self._id = None
     self._active = True
     self._address = address
     self._session = session
     self._hash = hashlib.sha1(session.torrent.info.raw()).digest()
-    self._handshake_cb = handshake_cb or (lambda *x: x)
     self._iostream = None
     self._bitfield = Bitfield(session.torrent.info.num_pieces)
     self._in = ConnectionState()
@@ -238,13 +199,15 @@ class Peer(object):
   def address(self):
     return self._address
 
-  @gen.engine
+  @gen.coroutine
   def handshake(self, iostream):
-    log.debug('Session [%s] starting handshake with %s:%s' % (self._session.peer_id,
-        self._address[0], self._address[1]))
+    log.debug('Session [%s] starting handshake with %s:%s' % (
+        self._session.peer_id,
+        self._address[0],
+        self._address[1]))
     handshake_full = PeerHandshake.make(self._session.torrent.info, self._session.peer_id)
     read_handshake, _ = yield [gen.Task(iostream.read_bytes, PeerHandshake.LENGTH),
-                                gen.Task(iostream.write, handshake_full)]
+                               gen.Task(iostream.write, handshake_full)]
 
     succeeded = False
     try:
@@ -260,9 +223,10 @@ class Peer(object):
         self._address[0], self._address[1], e))
       iostream.close()
 
-    self._handshake_cb(self, succeeded)
     log.debug('Session [%s] finishing handshake with %s:%s' % (self._session.peer_id,
         self._address[0], self._address[1]))
+
+    yield gen.Return(succeeded)
 
   @gen.engine
   def run(self):
@@ -291,6 +255,7 @@ class Peer(object):
       return
     self._out.interested = value
     log.debug('Sending %sinterested to [%s]' % ('' if value else 'un', self._id))
+    # XXX(sync)
     self._iostream.write(Command.wire(Command.INTERESTED) if self._out.interested
                     else Command.wire(Command.NOT_INTERESTED))
 
@@ -312,13 +277,13 @@ class Peer(object):
     log.debug('Sending bitfield to [%s]' % self._id)
     self._iostream.write(Command.wire(Command.BITFIELD, bitfield))
 
-  def send_cancel(self, piece):
-    log.debug('Sending cancel %s to %s' % (piece, self))
-    self._iostream.write(Command.wire(Command.CANCEL, piece))
+  def send_cancel(self, request):
+    log.debug('Sending cancel %s to %s' % (request, self))
+    self._iostream.write(Command.wire(Command.CANCEL, request))
 
-  def send_request(self, piece):
-    log.debug('Sending request %s to %s' % (piece, self))
-    self._iostream.write(Command.wire(Command.REQUEST, piece))
+  def send_request(self, request):
+    log.debug('Sending request %s to %s' % (request, self))
+    self._iostream.write(Command.wire(Command.REQUEST, request))
 
   def choke(self):
     self._in.choked = True
@@ -334,14 +299,62 @@ class Peer(object):
   def send_piece(self, piece, callback=None):
     if not self._out._interested or self._out._choked:
       log.debug('Skipping send of %s to [%s] (interested:%s, choked:%s)' % (
-        piece, self._id, self._out._interested, self._out._choked))
+          piece, self._id, self._out._interested, self._out._choked))
       return
-    if not piece.block:
-      piece.block = yield gen.Task(self._session.filemanager.read, piece)
+
+    # In case the piece is actually an unpopulated request, populate.
+    if isinstance(piece, request):
+      piece = Piece(request.index, request.offset, request.length,
+                    (yield gen.Task(self._session.filemanager.read, request)))
+
     yield gen.Task(self._iostream.write, Command.wire(Command.PIECE, piece))
     self._out.sent(length)
     if callback:
       self._session.io_loop.add_callback(callback)
+
+  # --- peer channel impls ---
+  def choke(self):
+    self._out.choked = True
+
+  def unchoke(self):
+    self._out.choked = False
+
+  def interested(self):
+    self._in.interested = True
+
+  def not_interested(self):
+    self._in.interested = False
+
+  def have(self, index):
+    self._bitfield[index] = True
+    self._session.pieces.have(piece)
+
+  def bitfield(self, bitfield):
+    # ???
+    self._session.pieces.remove(self._bitfield)
+    self._bitfield.fill(message_body)
+    log.debug('Peer [%s] has %d/%d pieces.' % (
+        self._id, sum((self._bitfield[k] for k in range(len(self._bitfield))), 0),
+        len(self._bitfield)))
+    self._session.pieces.add(self._bitfield)
+
+  def request(self, request):
+    # ???
+    log.debug('Peer [%s] requested %s' % (self._id, request))
+    if self._session.filemanager.covers(request):
+      log.debug('   => we have %s, initiating send.' % request)
+      yield gen.Task(self.send_piece, request)
+    else:
+      log.debug('   => do not have %s, ignoring.' % request)
+
+  def cancel(self, request):
+    self._in.cancel_request(request)
+
+  @gen.engine
+  def piece(self, piece):
+    self._session.scheduler.received(piece, from_peer=self)
+    yield gen.Task(self._session.filemanager.write, piece)
+    self._in.sent(len(message_body) - 8)
 
   @gen.engine
   def _recv_dispatch(self, message_id, message_body, callback=None):
@@ -372,13 +385,13 @@ class Peer(object):
       self._session.pieces.add(self._bitfield)
     elif message_id == Command.REQUEST:
       index, begin, length = struct.unpack('>III', message_body)
-      piece = Piece(index, begin, length)
-      log.debug('Peer [%s] requested %s' % (self._id, piece))
-      if self._session.filemanager.covers(piece):
-        log.debug('   => we have %s, initiating send.' % piece)
-        yield gen.Task(self.send_piece, index, begin, length)
+      request = Request(index, begin, length)
+      log.debug('Peer [%s] requested %s' % (self._id, request))
+      if self._session.filemanager.covers(request):
+        log.debug('   => we have %s, initiating send.' % request)
+        yield gen.Task(self.send_piece, request)
       else:
-        log.debug('   => do not have %s, ignoring.' % piece)
+        log.debug('   => do not have %s, ignoring.' % request)
     elif message_id == Command.PIECE:
       index, begin = struct.unpack('>II', message_body[0:8])
       piece = Piece(index, begin, len(message_body[8:]), message_body[8:])
@@ -388,8 +401,9 @@ class Peer(object):
       self._in.sent(len(message_body) - 8)
     elif message_id == Command.CANCEL:
       index, begin, length = struct.unpack('>III', message_body)
-      log.debug('Peer [%s] canceling %s' % (self._id, Piece(index, begin, length)))
-      self._in.cancel_request(Piece(index, begin, length))
+      request = Request(index, begin, length)
+      log.debug('Peer [%s] canceling %s' % (self._id, request))
+      self._in.cancel_request(request)
     else:
       raise Peer.BadMessage('Unknown message id: %s' % message_id)
     if callback:

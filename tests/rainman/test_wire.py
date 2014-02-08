@@ -1,5 +1,5 @@
 from rainman.bitfield import Bitfield
-from rainman.fileset import Piece
+from rainman.fileset import Piece, Request
 from rainman.wire import Command, PeerChannel
 
 
@@ -8,20 +8,20 @@ class TestIOStream(object):
     self._queue = ''
 
   def read_bytes(self, number, callback):
-    print 'Current queue len: %s' % len(self._queue)
-    print 'Asking to read %s bytes' % number
+    print('Current queue len: %s' % len(self._queue))
+    print('Asking to read %s bytes' % number)
     assert len(self._queue) >= number
     left, self._queue = self._queue[0:number], self._queue[number:]
-    print 'Read: %r' % left
+    print('Read: %r' % left)
     callback(left)
 
-  def write(self, buffer, callback=None):
-    print 'Writing: %r' % buffer
-    self._queue += buffer
+  def write(self, buf, callback=None):
+    print('Writing: %r' % buf)
+    self._queue += buf
     if callback:
       callback()
 
-
+# TODO(wickman) Just use mock
 class MockReceiver(PeerChannel):
   def __init__(self, *args, **kw):
     PeerChannel.__init__(self, *args, **kw)
@@ -124,17 +124,17 @@ def test_argument_commands():
   assert len(receiver.bitfields[0]) == len(receiver.bitfields[1])
 
   # request
-  sender.send_request(Piece(0, 1, 2))
+  sender.send_request(Request(0, 1, 2))
   receiver.recv()
-  assert receiver.requests == [Piece(0, 1, 2)]
+  assert receiver.requests == [Request(0, 1, 2)]
 
   # cancel
-  sender.send_cancel(Piece(0, 1, 2))
+  sender.send_cancel(Request(0, 1, 2))
   receiver.recv()
-  assert receiver.cancels == [Piece(0, 1, 2)]
+  assert receiver.cancels == [Request(0, 1, 2)]
 
   # piece
-  piece = Piece(0, 1, len("hello world"), "hello world")
+  piece = Piece(0, 1, len(b'hello world'), b'hello world')
   sender.send_piece(piece)
   receiver.recv()
   assert receiver.pieces == [piece]

@@ -1,10 +1,10 @@
 import struct
-from types import MethodType
 
 from tornado import gen
 
 from .bitfield import Bitfield
-from .fileset import Piece
+from .fileset import Piece, Request
+
 
 class Command(object):
   KEEPALIVE      = -1
@@ -19,92 +19,89 @@ class Command(object):
   CANCEL         = 8
 
 
+def encode_keepalive(command):
+  return struct.pack('>I', 0)
+
+
+def encode_bit(command):
+  return b''.join([struct.pack('>I', 1),
+                   struct.pack('B', command)])
+
+
+def encode_have(command, index):
+  return b''.join([struct.pack('>I', 5),
+                   struct.pack('B', command),
+                   struct.pack('>I', index)])
+
+
+def encode_bitfield(command, bitfield):
+  assert isinstance(bitfield, Bitfield)
+  return b''.join([struct.pack('>I', 1 + bitfield.num_bytes),
+                   struct.pack('B', command),
+                   bitfield.as_bytes()])
+
+
+def encode_request(command, request):
+  if not isinstance(request, Request):
+    raise TypeError('Expected request of type Request, got %s' % type(request))
+  return b''.join([struct.pack('>I', 13),
+                   struct.pack('B', command),
+                   struct.pack('>III', request.index, request.offset, request.length)])
+
+
+def encode_piece(command, piece):
+  if not isinstance(piece, Piece):
+    raise TypeError('Expected piece of type Piece, got %s' % type(piece))
+  return b''.join([struct.pack('>I', 9 + piece.length),
+                   struct.pack('B', command),
+                   struct.pack('>II', piece.index, piece.offset),
+                   piece.block])
+
+
+def decode_bit(channel, command, _):
+  if command == Command.CHOKE:
+    channel.choke()
+  elif command == Command.UNCHOKE:
+    channel.unchoke()
+  elif command == Command.INTERESTED:
+    channel.interested()
+  elif command == Command.NOT_INTERESTED:
+    channel.not_interested()
+  else:
+    raise ValueError('Could not decode command: %s (type: %s)' % (command, type(command)))
+
+
+def decode_have(channel, command, index):
+  index, = struct.unpack('>I', index)
+  channel.have(index)
+
+
+def decode_bitfield(channel, command, bitfield):
+  # TODO(wickman) -- There is no easy way to know the intended length of
+  # the bitfield here.  So we have to cheat and take the ceil().  Make
+  # sure to fix the code in session.py:PieceSet.add/remove
+  channel.bitfield(Bitfield.from_bytes(bitfield))
+
+
+def decode_request(channel, command, request):
+  index, offset, length = struct.unpack('>III', request)
+  request = Request(index, offset, length)
+  if command == Command.REQUEST:
+    channel.request(request)
+  elif command == Command.CANCEL:
+    channel.cancel(request)
+  else:
+    raise ValueError('Could not decode command: %s' % command)
+
+
+def decode_piece(channel, command, body):
+  index, offset = struct.unpack('>II', body[0:8])
+  piece = Piece(index, offset, len(body[8:]), body[8:])
+  channel.piece(piece)
+
+
 class PeerChannel(object):
   class CodingError(Exception): pass
-
-  def encode_keepalive(command):
-    return struct.pack('>I', 0)
-
-  def encode_bit(command):
-    return ''.join([struct.pack('>I', 1), struct.pack('B', command)])
-
-  def encode_have(command, index):
-    return ''.join([struct.pack('>I', 5), struct.pack('B', command), struct.pack('>I', index)])
-
-  def encode_bitfield(command, bitfield):
-    assert isinstance(bitfield, Bitfield)
-    return ''.join([struct.pack('>I', 1 + bitfield.num_bytes), struct.pack('B', command),
-                    bitfield.as_bytes()])
-
-  def encode_request(command, piece):
-    assert isinstance(piece, Piece)
-    assert piece.is_request
-    return ''.join([struct.pack('>I', 13), struct.pack('B', command),
-                    struct.pack('>III', piece.index, piece.offset, piece.length)])
-
-  def encode_piece(command, piece):
-    assert isinstance(piece, Piece)
-    assert not piece.is_request
-    return ''.join([struct.pack('>I', 9 + piece.length), struct.pack('B', command),
-                    struct.pack('>II', piece.index, piece.offset), piece.block])
-
-
-  @staticmethod
-  def encode(command, *args):
-    return PeerChannel.ENCODERS[command](command, *args)
-
-  def __init__(self, iostream):
-    self._iostream = iostream
-
-  def send(self, command, *args):
-    self._iostream.write(PeerChannel.encode(command, *args))
-
-  @gen.engine
-  def recv(self):
-    message_length = struct.unpack('>I', (yield gen.Task(self._iostream.read_bytes, 4)))[0]
-    if message_length == 0:
-      self.keepalive()
-      return
-    message_body = yield gen.Task(self._iostream.read_bytes, message_length)
-    message_id = ord(message_body[0])
-    # close your eyes and turn away
-    MethodType(PeerChannel.DECODERS[message_id], self, self.__class__)(message_id, message_body[1:])
-
-  def decode_bit(self, command, _):
-    if command == Command.CHOKE:
-      self.choke()
-    elif command == Command.UNCHOKE:
-      self.unchoke()
-    elif command == Command.INTERESTED:
-      self.interested()
-    elif command == Command.NOT_INTERESTED:
-      self.not_interested()
-    else:
-      raise PeerChannel.CodingError('Could not decode command: %s (type: %s)' % (command, type(command)))
-
-  def decode_have(self, command, index):
-    index, = struct.unpack('>I', index)
-    self.have(index)
-
-  def decode_bitfield(self, command, bitfield):
-    # TODO(wickman) -- There is no easy way to know the intended length of
-    # the bitfield here.  So we have to cheat and take the ceil().  Make
-    # sure to fix the code in session.py:PieceSet.add/remove
-    self.bitfield(Bitfield.from_bytes(bitfield))
-
-  def decode_request(self, command, piece):
-    piece = Piece(*struct.unpack('>III', piece))
-    if command == Command.REQUEST:
-      self.request(piece)
-    elif command == Command.CANCEL:
-      self.cancel(piece)
-    else:
-      raise PeerChannel.CodingError('Could not decode command: %s' % command)
-
-  def decode_piece(self, command, body):
-    index, offset = struct.unpack('>II', body[0:8])
-    piece = Piece(index, offset, len(body[8:]), body[8:])
-    self.piece(piece)
 
   ENCODERS = {
     Command.KEEPALIVE: encode_keepalive,
@@ -131,8 +128,30 @@ class PeerChannel(object):
     Command.PIECE: decode_piece
   }
 
-  # ---- Subclasses override should they want notifications on these events
+  @classmethod
+  def encode(cls, command, *args):
+    """Encode a command and return the bytes associated with it."""
+    return cls.ENCODERS[command](command, *args)
 
+  def __init__(self, iostream):
+    self._iostream = iostream
+
+  # XXX(async)
+  def decode(self, command, *args):
+    """Decode a command an invoke its callback."""
+    self.DECODERS[command](self, command, *args)
+
+  @gen.engine
+  def recv(self):
+    message_length = struct.unpack('>I', (yield gen.Task(self._iostream.read_bytes, 4)))[0]
+    if message_length == 0:
+      self.keepalive()
+      return
+    message_body = yield gen.Task(self._iostream.read_bytes, message_length)
+    message_id, message_body = ord(message_body[0]), message_body[1:]
+    self.decode(message_id, message_body)
+
+  # ---- Subclasses override should they want notifications on these events
   def keepalive(self):
     pass
 
@@ -154,16 +173,19 @@ class PeerChannel(object):
   def bitfield(self, bitfield):
     pass
 
-  def request(self, piece):
+  def request(self, request):
     pass
 
-  def cancel(self, piece):
+  def cancel(self, request):
     pass
 
   def piece(self, piece):
     pass
 
   # ---- Wrappers around self.send(Command, ...)
+  def send(self, command, *args):
+    # XXX(async) -- need an io_pool to enqueue or make this a gen.engine
+    self._iostream.write(self.encode(command, *args))
 
   def send_keepalive(self):
     self.send(Command.KEEPALIVE)
@@ -186,11 +208,11 @@ class PeerChannel(object):
   def send_bitfield(self, bitfield):
     self.send(Command.BITFIELD, bitfield)
 
-  def send_request(self, piece):
-    self.send(Command.REQUEST, piece)
+  def send_request(self, request):
+    self.send(Command.REQUEST, request)
 
-  def send_cancel(self, piece):
-    self.send(Command.CANCEL, piece)
+  def send_cancel(self, request):
+    self.send(Command.CANCEL, request)
 
   def send_piece(self, piece):
     self.send(Command.PIECE, piece)

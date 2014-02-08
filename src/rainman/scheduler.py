@@ -93,18 +93,20 @@ class Scheduler(object):
     complete piece to upload, new connections are three times as likely to
     start as the current optimistic unchoke as anywhere else in the rotation.
 
-
     Uses:
       session.torrent
       session.pieces
       session.bitfield
       session.filemanager
+      session.io_loop
+      session.owners
   """
   # Scheduling values
   TARGET_PEER_EGRESS = Amount(2, Data.MB) # per second.
   MAX_UNCHOKED_PEERS = 5
   MAX_PEERS          = 50
   MAX_REQUESTS       = 100
+  CONSIDERED_PIECES  = 20
   REQUEST_SIZE       = Amount(16, Data.KB)
   OUTER_YIELD        = datetime.timedelta(0, 0, Amount(10, Time.MILLISECONDS).as_(Time.MICROSECONDS))
   INNER_YIELD        = datetime.timedelta(0, 0, Amount(1, Time.MILLISECONDS).as_(Time.MICROSECONDS))
@@ -128,21 +130,21 @@ class Scheduler(object):
     return self._session.torrent.info.piece_size
 
   def split_piece(self, index):
-    request_size = int(Scheduler.REQUEST_SIZE.as_(Data.BYTES))
+    request_size = int(self.REQUEST_SIZE.as_(Data.BYTES))
     ps = self.piece_size(index)
     for k in range(0, ps, request_size):
       yield Piece(index, k, request_size if k + request_size <= ps else ps % request_size)
 
+  def to_slice(self, piece):
+    start = piece.index * self._session.torrent.info.piece_size + piece.offset
+    return slice(start, start + piece.length)
+
   @gen.engine
   def schedule(self):
-    def to_slice(piece):
-      start = piece.index * self._session.torrent.info.piece_size + piece.offset
-      return slice(start, start + piece.length)
-
     while self._active:
       session_bitfield = self._session.bitfield
-      rarest = filter(lambda index: not session_bitfield[index], self._session.pieces.rarest())
-      rarest = rarest[:20]
+      rarest = [piece for piece in self._session.pieces.rarest() if not session_bitfield[index]]
+      rarest = rarest[:self.CONSIDERED_PIECES]
       random.shuffle(rarest)
 
       for piece_index in rarest:
@@ -159,7 +161,8 @@ class Scheduler(object):
           log.debug('Hit max requests, waiting.')
           yield gen.Task(self._session.io_loop.add_timeout, Scheduler.INNER_YIELD)
         for subpiece in list(self.split_piece(piece_index)):
-          if to_slice(subpiece) not in self._session.filemanager.slices and subpiece not in self._requests:
+          if self.to_slice(subpiece) not in self._session.filemanager.slices and (
+              subpiece not in self._requests):
             random_peer = random.choice(owners)
             if random_peer.choked:
               if not random_peer.interested:

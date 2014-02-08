@@ -7,4 +7,4 @@ should have reasonable performance (~20MB/s/process using CPython in 2012.)
 
 to run tests:
 
-  >> ./pants tests:all -v
+  >> ./pants tests/rainman:all -v

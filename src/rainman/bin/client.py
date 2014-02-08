@@ -1,9 +1,11 @@
 import code
 import time
 
+from rainman.session import Session, PeerSet
+from rainman.metainfo import Torrent
+
 from twitter.common import app
-from twitter.torrent.session import Session, PeerSet
-from twitter.torrent.metainfo import Torrent
+
 
 app.add_option('--torrent', metavar='FILENAME', default=None,
                help='Torrent filename to start session on.')
@@ -23,5 +25,6 @@ def main(args, options):
     session.start()
   while True:
     time.sleep(10)
+
 
 app.main()

@@ -1,11 +1,13 @@
 from collections import defaultdict
 import time
 
+from rainman.codec import BEncoder
+
 from twitter.common import app, log
 from twitter.common.app.modules.http import RootServer
 from twitter.common.http import HttpServer
 from twitter.common.quantity import Amount, Time
-from twitter.torrent.codec import BEncoder
+
 
 class TrackerRequest(object):
   class MalformedRequestError(Exception): pass
@@ -137,6 +139,7 @@ def main(args, options):
   RootServer().mount_routes(tracker)
   while True:
     time.sleep(10)
+
 
 app.configure(module='twitter.common.app.modules.http', enable=True, framework='tornado')
 app.main()

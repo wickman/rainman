@@ -4,3 +4,7 @@ tornado integration.
 this was last hacked on in march 2012 so the code is rusty and i've
 forgotten many of the details, but feel free to pick it up.  untuned peers
 should have reasonable performance (~20MB/s/process using CPython in 2012.)
+
+to run tests:
+
+  >> ./pants tests:all -v

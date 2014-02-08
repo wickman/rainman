@@ -1,5 +1,6 @@
-import pytest
 from rainman.sliceset import SliceSet
+
+import pytest
 
 
 def make_single(slc):

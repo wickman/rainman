@@ -1,7 +1,7 @@
-import pytest
-
-from twitter.common.quantity import Amount, Time, Data
 from rainman.bandwidth import Bandwidth
+
+import pytest
+from twitter.common.quantity import Amount, Time, Data
 
 
 class TestClock(object):

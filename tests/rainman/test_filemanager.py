@@ -1,11 +1,12 @@
 from math import ceil
 import os
-import pytest
 import random
 import struct
 import tempfile
 
 from rainman.fileset import FileManager, FileSet
+
+import pytest
 
 
 def test_bad_input():

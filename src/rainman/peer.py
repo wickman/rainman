@@ -2,15 +2,14 @@ import hashlib
 import struct
 import time
 
-from twitter.common import log
-from twitter.common.quantity import Time, Amount
-
-from tornado import gen
-
 from .bandwidth import Bandwidth
 from .bitfield import Bitfield
-from .metainfo import MetaInfo
 from .fileset import Piece
+from .metainfo import MetaInfo
+
+from tornado import gen
+from twitter.common import log
+from twitter.common.quantity import Time, Amount
 
 
 class PeerHandshake(object):

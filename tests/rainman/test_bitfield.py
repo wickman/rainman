@@ -1,6 +1,9 @@
-import pytest
 import random
+
 from rainman.bitfield import Bitfield
+
+import pytest
+
 
 def test_corners():
   bf = Bitfield(0)

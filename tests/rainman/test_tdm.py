@@ -1,5 +1,7 @@
-from twitter.common.quantity import Amount, Time
 from rainman.scheduler import TimeDecayMap
+
+from twitter.common.quantity import Amount, Time
+
 
 class TestClock(object):
   def __init__(self, initial=0):

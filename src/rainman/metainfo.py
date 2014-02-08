@@ -3,10 +3,11 @@ import hashlib
 import math
 import os
 
+from .codec import BEncoder, BDecoder
+
 from twitter.common.collections import OrderedSet
 from twitter.common.quantity import Amount, Data
 
-from .codec import BEncoder, BDecoder
 
 class Torrent(object):
   @staticmethod

@@ -1,11 +1,9 @@
 # TODO(wickman) Flesh this out
-
 import hashlib
-
-from twitter.common import log
 
 from tornado import gen
 from tornado.netutil import TCPServer
+from twitter.common import log
 
 
 class PeerHandshake(object):

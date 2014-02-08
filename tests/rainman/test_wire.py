@@ -2,6 +2,7 @@ from rainman.bitfield import Bitfield
 from rainman.fileset import Piece
 from rainman.wire import Command, PeerChannel
 
+
 class TestIOStream(object):
   def __init__(self):
     self._queue = ''

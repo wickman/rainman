@@ -4,12 +4,13 @@ import os
 import struct
 import tempfile
 
+from .iopool import IOPool
+from .sliceset import SliceSet
+
 import tornado.gen
 from twitter.common.dirutil import safe_mkdir, safe_rmtree
 from twitter.common import log
 
-from .iopool import IOPool
-from .sliceset import SliceSet
 
 __all__ = ('FileSet', 'FileIOPool')
 

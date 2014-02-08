@@ -9,19 +9,18 @@ import struct
 import tempfile
 import urllib
 
-from twitter.common import log
-from twitter.common.quantity import Amount, Time
-
-import tornado.ioloop
-from tornado import httpclient
-from tornado.netutil import TCPServer
-from tornado.iostream import IOStream
-
 from .bitfield import Bitfield
 from .codec import BDecoder
 from .fileset import FileManager, Piece
 from .peer import Peer
 from .scheduler import Scheduler
+
+import tornado.ioloop
+from tornado import httpclient
+from tornado.netutil import TCPServer
+from tornado.iostream import IOStream
+from twitter.common import log
+from twitter.common.quantity import Amount, Time
 
 
 class PieceSet(object):
@@ -186,6 +185,7 @@ class PeerListener(TCPServer):
 class PeerId(object):
   PREFIX = '-TW7712-'  # TWTTR
   LENGTH = 20
+
   @classmethod
   def generate(cls):
     return cls.PREFIX + ''.join(random.sample('0123456789abcdef', cls.LENGTH - len(cls.PREFIX)))

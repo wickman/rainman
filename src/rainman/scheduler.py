@@ -2,12 +2,11 @@ import datetime
 import random
 import time
 
-from twitter.common import log
-from twitter.common.quantity import Amount, Data, Time
+from .fileset import Piece
 
 from tornado import gen
-
-from .fileset import Piece
+from twitter.common import log
+from twitter.common.quantity import Amount, Data, Time
 
 
 class TimeDecayMap(object):

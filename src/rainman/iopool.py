@@ -8,10 +8,10 @@ except ImportError:
 
 import tornado.ioloop
 from tornado import stack_context
-
 from twitter.common.quantity import Amount, Time
 
 __all__ = ('IOPool',)
+
 
 class IOPool(object):
   """

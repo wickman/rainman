@@ -1,0 +1,6 @@
+rainman is a pure python implementation of the bittorrent protocol with
+tornado integration.
+
+this was last hacked on in march 2012 so the code is rusty and i've
+forgotten many of the details, but feel free to pick it up.  untuned peers
+should have reasonable performance (~20MB/s/process using CPython in 2012.)

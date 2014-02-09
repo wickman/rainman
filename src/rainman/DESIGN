@@ -1,0 +1,84 @@
+TorrentContext
+  torrent
+  piece manager
+  peer set
+  
+
+Client:
+  peer id
+  peer listener
+  torrents   { hash => metainfo }
+  databases  { hash => FileManager }
+  sessions   { hash => torrent_session }
+  candidates { hash => PeerSet }
+  .add_torrent(torrent, chroot)
+  .remove_torrent(torrent)
+
+
+TorrentSession:
+  filemanager
+  peers
+  .add_peer()
+  .remove_peer()
+  .choke_peer()
+  .run()
+
+
+TorrentScheduler
+  session    # for filemanager, peers
+  piece_set  # for computing rarest
+  
+
+Peer:
+  in
+  out
+  address
+  uploaded
+  downloaded
+  bitfield
+  filemanager
+  register_callback()  # callback on bitfield change
+
+
+Minimum integration test:
+  seed = Peer(filemanager1)  # full file
+  peer = Peer(filemanager2)  # empty file
+  seed_session = TorrentSession(filemanager1).add_peer(peer)
+  peer_session = TorrentSession(filemanager2).add_peer(seed)
+  scheduler = TorrentScheduler(peer_session)
+  scheduler.run_until_complete()
+
+
+The scheduler may want access to the client, in case there is global state
+regarding the number of outstanding requests.  The Client may also choose to
+drop handshakes to keep the number of peers at a sane limit, or could add
+priorities to different torrents and try to keep the number of peers in
+proportion to the priority of the torrents.
+
+
+PeerListener           Session         PeerSet(CandidatePeers)
+  
+                      Scheduler
+
+                     Peer<->Wire
+
+
+Context(Torrent):
+  Scheduler
+  CandidatePeers
+  Peers
+
+
+# Should possibly be called PieceManager instead
+FileManager(torrent)
+  .have(index)
+  .read(request, callback)
+  .write(piece, callback)
+
+
+Request
+  index, offset, length
+
+
+Piece
+  index, offset, length, block

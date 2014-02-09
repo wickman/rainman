@@ -1,9 +1,43 @@
-import struct
+"""
+coroutines take functions w/o callbacks and turn them into futures
+they are also allowed to yield other futures (or gen.Task(engine_fn) or gen.Task(fn w/ callback))
 
-from tornado import gen
+engines take functions w/ or w/o callbacks and allow them to pipeline and yield tasks
+to 'return' a value, must use callback()
+
+iopool takes something that is synchronous (an ordinary function) and runs it in a separate
+thread.  once that function has completed, the callback is called.  this could be turned
+into a Future using
+
+  @gen.coroutine
+  def wrapper(func, *args, **kw):
+    raise gen.Return(func(*args, **kw))
+
+but this does not thread.
+
+you can always call iostream.write(...) from outside an engine/coroutine and it will not
+block.  if you need to sequence certain operations (e.g. read data to populate a buffer,
+then send elsewhere), then it will need to be done within an engine/coroutine and yielded
+appropriately as part of a task.
+
+one danger here of course is doing something like:
+  iostream.write('bytes1', callback1)
+  iostream.write('bytes2', callback2)
+
+in sequence.  first, not only is this dangerous, but second, callback1 may never be
+called as only one outstanding write callback can be live on a stream.  therefore all i/o
+on a single stream should likely be synchronized to a certain degree.
+"""
+
+from abc import abstractmethod, abstractproperty
+import struct
 
 from .bitfield import Bitfield
 from .fileset import Piece, Request
+
+from tornado import gen
+from twitter.common import log
+from twitter.common.lang import Interface
 
 
 class Command(object):
@@ -17,6 +51,23 @@ class Command(object):
   REQUEST        = 6
   PIECE          = 7
   CANCEL         = 8
+  
+  NAMES = {
+    KEEPALIVE: 'KEEPALIVE',
+    CHOKE: 'CHOKE',
+    UNCHOKE: 'UNCHOKE',
+    INTERESTED: 'INTERESTED',
+    NOT_INTERESTED: 'NOT_INTERESTED',
+    HAVE: 'HAVE',
+    BITFIELD: 'BITFIELD',
+    REQUEST: 'REQUEST',
+    PIECE: 'PIECE',
+    CANCEL: 'CANCEL',
+  }
+  
+  @classmethod
+  def to_string(cls, command):
+    return cls.NAMES.get(command, 'UNKNOWN')
 
 
 def encode_keepalive(command):
@@ -60,36 +111,36 @@ def encode_piece(command, piece):
 
 def decode_bit(channel, command, _):
   if command == Command.CHOKE:
-    channel.choke()
+    return channel.choke()
   elif command == Command.UNCHOKE:
-    channel.unchoke()
+    return channel.unchoke()
   elif command == Command.INTERESTED:
-    channel.interested()
+    return channel.interested()
   elif command == Command.NOT_INTERESTED:
-    channel.not_interested()
+    return channel.not_interested()
   else:
     raise ValueError('Could not decode command: %s (type: %s)' % (command, type(command)))
 
 
 def decode_have(channel, command, index):
   index, = struct.unpack('>I', index)
-  channel.have(index)
+  return channel.have(index)
 
 
 def decode_bitfield(channel, command, bitfield):
   # TODO(wickman) -- There is no easy way to know the intended length of
   # the bitfield here.  So we have to cheat and take the ceil().  Make
   # sure to fix the code in session.py:PieceSet.add/remove
-  channel.bitfield(Bitfield.from_bytes(bitfield))
+  return channel.bitfield(Bitfield.from_bytes(bitfield))
 
 
 def decode_request(channel, command, request):
   index, offset, length = struct.unpack('>III', request)
   request = Request(index, offset, length)
   if command == Command.REQUEST:
-    channel.request(request)
+    return channel.request(request)
   elif command == Command.CANCEL:
-    channel.cancel(request)
+    return channel.cancel(request)
   else:
     raise ValueError('Could not decode command: %s' % command)
 
@@ -97,10 +148,10 @@ def decode_request(channel, command, request):
 def decode_piece(channel, command, body):
   index, offset = struct.unpack('>II', body[0:8])
   piece = Piece(index, offset, len(body[8:]), body[8:])
-  channel.piece(piece)
+  return channel.piece(piece)
 
 
-class PeerChannel(object):
+class Wire(Interface):
   class CodingError(Exception): pass
 
   ENCODERS = {
@@ -129,90 +180,111 @@ class PeerChannel(object):
   }
 
   @classmethod
-  def encode(cls, command, *args):
+  def _encode(cls, command, *args):
     """Encode a command and return the bytes associated with it."""
     return cls.ENCODERS[command](command, *args)
 
-  def __init__(self, iostream):
-    self._iostream = iostream
+  @classmethod
+  def _dispatch(cls, interface, command, body):
+    """Decode a command and dispatch a call to the :class:`WireInterface` interface."""
+    return cls.DECODERS[command](interface, command, body)
 
-  # XXX(async)
-  def decode(self, command, *args):
-    """Decode a command an invoke its callback."""
-    self.DECODERS[command](self, command, *args)
+  # ---- Iostream interface
+  @abstractproperty
+  def iostream(self):
+    pass
 
-  @gen.engine
-  def recv(self):
-    message_length = struct.unpack('>I', (yield gen.Task(self._iostream.read_bytes, 4)))[0]
-    if message_length == 0:
-      self.keepalive()
-      return
-    message_body = yield gen.Task(self._iostream.read_bytes, message_length)
-    message_id, message_body = ord(message_body[0]), message_body[1:]
-    self.decode(message_id, message_body)
-
-  # ---- Subclasses override should they want notifications on these events
+  # ---- Receive methods.  These must all return futures (@gen.coroutines.)
+  @abstractmethod
   def keepalive(self):
     pass
 
+  @abstractmethod
   def choke(self):
     pass
 
+  @abstractmethod
   def unchoke(self):
     pass
 
+  @abstractmethod
   def interested(self):
     pass
 
+  @abstractmethod
   def not_interested(self):
     pass
 
+  @abstractmethod
   def have(self, index):
     pass
 
+  @abstractmethod
   def bitfield(self, bitfield):
     pass
 
+  @abstractmethod
   def request(self, request):
     pass
 
+  @abstractmethod
   def cancel(self, request):
     pass
 
+  @abstractmethod
   def piece(self, piece):
     pass
+  
+  # ---- Receive interface.
+  @gen.coroutine
+  def recv(self):
+    """Receive a message on the iostream, and dispatch to the provided interface."""
+    message_length = struct.unpack('>I', (yield gen.Task(self.iostream.read_bytes, 4)))[0]
+    log.debug('message length: %d' % message_length)
+    if message_length == 0:
+      yield self.keepalive()
+    else:
+      message_body = yield gen.Task(self.iostream.read_bytes, message_length)
+      message_id, message_body = ord(message_body[0]), message_body[1:]
+      log.debug('message_id: %s' % message_id)
+      yield self._dispatch(self, message_id, message_body)
 
-  # ---- Wrappers around self.send(Command, ...)
+  # ---- Send interface.
+  @gen.coroutine
   def send(self, command, *args):
-    # XXX(async) -- need an io_pool to enqueue or make this a gen.engine
-    self._iostream.write(self.encode(command, *args))
+    log.debug('[%s] sending %s(%s)' % (
+        self, Command.to_string(command), ', '.join(map(str, args))))
+    yield gen.Task(self.iostream.write, self._encode(command, *args))
 
   def send_keepalive(self):
-    self.send(Command.KEEPALIVE)
+    return self.send(Command.KEEPALIVE)
 
   def send_choke(self):
-    self.send(Command.CHOKE)
+    return self.send(Command.CHOKE)
 
   def send_unchoke(self):
-    self.send(Command.UNCHOKE)
+    return self.send(Command.UNCHOKE)
 
   def send_interested(self):
-    self.send(Command.INTERESTED)
+    return self.send(Command.INTERESTED)
 
   def send_not_interested(self):
-    self.send(Command.NOT_INTERESTED)
+    return self.send(Command.NOT_INTERESTED)
 
   def send_have(self, index):
-    self.send(Command.HAVE, index)
+    return self.send(Command.HAVE, index)
 
   def send_bitfield(self, bitfield):
-    self.send(Command.BITFIELD, bitfield)
+    return self.send(Command.BITFIELD, bitfield)
 
   def send_request(self, request):
-    self.send(Command.REQUEST, request)
+    log.debug('wat?')
+    lol = self.send(Command.REQUEST, request)
+    log.debug('lol is %s' % lol)
+    return lol
 
   def send_cancel(self, request):
-    self.send(Command.CANCEL, request)
+    return self.send(Command.CANCEL, request)
 
   def send_piece(self, piece):
-    self.send(Command.PIECE, piece)
+    return self.send(Command.PIECE, piece)

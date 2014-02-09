@@ -1,4 +1,4 @@
-python_requirement('tornado<3')
+python_requirement('tornado>=3')
 
 python_library(
   name = 'rainman',

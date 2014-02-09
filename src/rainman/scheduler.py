@@ -10,10 +10,7 @@ from twitter.common.quantity import Amount, Data, Time
 
 
 class TimeDecayMap(object):
-  """
-    A time-decaying map from slice to a list of peers from whom the slice
-    has been requested.
-  """
+  """A time-decaying map that drops entries older than a timeout."""
 
   DEFAULT_WINDOW = Amount(15, Time.SECONDS)
 
@@ -101,15 +98,14 @@ class Scheduler(object):
       session.io_loop
       session.owners
   """
-  # Scheduling values
-  TARGET_PEER_EGRESS = Amount(2, Data.MB) # per second.
+  # Scheduling constants
   MAX_UNCHOKED_PEERS = 5
-  MAX_PEERS          = 50
-  MAX_REQUESTS       = 100
-  CONSIDERED_PIECES  = 20
-  REQUEST_SIZE       = Amount(16, Data.KB)
-  OUTER_YIELD        = datetime.timedelta(0, 0, Amount(10, Time.MILLISECONDS).as_(Time.MICROSECONDS))
-  INNER_YIELD        = datetime.timedelta(0, 0, Amount(1, Time.MILLISECONDS).as_(Time.MICROSECONDS))
+  MAX_PEERS = 50
+  MAX_REQUESTS = 100
+  CONSIDERED_PIECES = 20
+  REQUEST_SIZE = Amount(16, Data.KB)
+  OUTER_YIELD = datetime.timedelta(0, 0, Amount(10, Time.MILLISECONDS).as_(Time.MICROSECONDS))
+  INNER_YIELD = datetime.timedelta(0, 0, Amount(1, Time.MILLISECONDS).as_(Time.MICROSECONDS))
 
   def __init__(self, session):
     self._session = session
@@ -118,6 +114,7 @@ class Scheduler(object):
     self._timer = None
     self._active = True
 
+  # should probably be a method on filemanager
   def piece_size(self, index):
     num_pieces, leftover = divmod(self._session.torrent.info.length,
                                   self._session.torrent.info.piece_size)
@@ -129,12 +126,14 @@ class Scheduler(object):
       return leftover
     return self._session.torrent.info.piece_size
 
+  # ditto
   def split_piece(self, index):
     request_size = int(self.REQUEST_SIZE.as_(Data.BYTES))
     ps = self.piece_size(index)
     for k in range(0, ps, request_size):
       yield Piece(index, k, request_size if k + request_size <= ps else ps % request_size)
 
+  # ditto
   def to_slice(self, piece):
     start = piece.index * self._session.torrent.info.piece_size + piece.offset
     return slice(start, start + piece.length)
@@ -160,6 +159,7 @@ class Scheduler(object):
         if self._requests.outstanding > Scheduler.MAX_REQUESTS:
           log.debug('Hit max requests, waiting.')
           yield gen.Task(self._session.io_loop.add_timeout, Scheduler.INNER_YIELD)
+        # subpiece nomenclature is "block"
         for subpiece in list(self.split_piece(piece_index)):
           if self.to_slice(subpiece) not in self._session.filemanager.slices and (
               subpiece not in self._requests):
@@ -171,6 +171,7 @@ class Scheduler(object):
               random_peer.interested = True
               continue
             log.debug('Scheduler requesting %s from peer [%s].' % (subpiece, random_peer))
+            # XXX sync
             random_peer.send_request(subpiece)
             self._requests.add(subpiece, random_peer)
 
@@ -183,6 +184,7 @@ class Scheduler(object):
     for peer in self._requests.remove(piece):
       if peer != from_peer:
         log.debug('Sending cancellation to peer [%s]' % peer.id)
+        # XXX sync
         peer.send_cancel(piece)
 
   def stop(self):

@@ -111,12 +111,12 @@ class ConnectionState(object):
   @property
   def healthy(self):
     now = time.time()
-    return now - self._last_alive < ConnectionState.MAX_KEEPALIVE_WINDOW.as_(Time.SECONDS)
+    return now - self._last_alive < self.MAX_KEEPALIVE_WINDOW.as_(Time.SECONDS)
 
   @property
   def needs_ping(self):
     now = time.time()
-    return now - self._last_alive >= ConnectionState.MIN_KEEPALIVE_WINDOW.as_(Time.SECONDS)
+    return now - self._last_alive >= self.MIN_KEEPALIVE_WINDOW.as_(Time.SECONDS)
 
   @property
   def choked(self):
@@ -152,10 +152,20 @@ class ConnectionState(object):
   del updates_keepalive
 
 
-# TODO(wickman) Integrate with wire.py
-class Peer(object):
+class Peer(Wire):
+  """Peer state
+  
+  Requires:
+    session.torrent
+    session.peer_id
+    session.filemanager
+    session.pieces
+    session.scheduler
+  """
+
   class Error(Exception): pass
-  class BadMessage(Exception): pass
+  class BadMessage(Error): pass
+  class PeerInactive(Error): pass
 
   def __init__(self, address, session):
     self._id = None
@@ -163,13 +173,20 @@ class Peer(object):
     self._address = address
     self._session = session
     self._hash = hashlib.sha1(session.torrent.info.raw()).digest()
-    self._iostream = None
     self._bitfield = Bitfield(session.torrent.info.num_pieces)
     self._in = ConnectionState()
     self._out = ConnectionState()
+    self._iostream = None
+    super(Peer, self).__init__()
+  
+  @property
+  def iostream(self):
+    if self._iostream is None:
+      raise self.PeerInactive('Trying to send/recv on inactive peer %s' % self)
+    return self._iostream
 
   def __str__(self):
-    return 'Peer(%s iostream:%s)' % (self._id, self._iostream)
+    return 'Peer(%s)' % self._id
 
   @property
   def bitfield(self):
@@ -199,22 +216,36 @@ class Peer(object):
   def address(self):
     return self._address
 
+  @property
+  def is_choked(self):
+    return self._out.choked
+
+  @property
+  def is_interested(self):
+    return self._out.interested
+
+  @property
+  def is_healthy(self):
+    return self._in.healthy
+
   @gen.coroutine
   def handshake(self, iostream):
     log.debug('Session [%s] starting handshake with %s:%s' % (
         self._session.peer_id,
         self._address[0],
         self._address[1]))
+
     handshake_full = PeerHandshake.make(self._session.torrent.info, self._session.peer_id)
-    read_handshake, _ = yield [gen.Task(iostream.read_bytes, PeerHandshake.LENGTH),
-                               gen.Task(iostream.write, handshake_full)]
+    read_handshake, _ = yield [
+        gen.Task(iostream.read_bytes, PeerHandshake.LENGTH),
+        gen.Task(iostream.write, handshake_full)]
 
     succeeded = False
     try:
       handshake = PeerHandshake(read_handshake)
       if handshake.hash == self._hash:
         self._id = handshake.peer_id
-        self._iostream = iostream
+        self._wire = Wire(self, iostream)
         succeeded = True
       else:
         log.debug('Session [%s] got mismatched torrent hashes.' % self._session.peer_id)
@@ -226,80 +257,48 @@ class Peer(object):
     log.debug('Session [%s] finishing handshake with %s:%s' % (self._session.peer_id,
         self._address[0], self._address[1]))
 
-    yield gen.Return(succeeded)
+    raise gen.Return(succeeded)
 
+  # -- runner
   @gen.engine
   def run(self):
     while self._active:
-      message_length = struct.unpack('>I', (yield gen.Task(self._iostream.read_bytes, 4)))[0]
-      if message_length == 0:
-        log.debug('Received keepalive from [%s]' % self._id)
-        self._in.ping()
-        return
-      message_body = yield gen.Task(self._iostream.read_bytes, message_length)
-      message_id = ord(message_body[0])
-      self._recv_dispatch(message_id, message_body[1:])
-
-  @property
-  def choked(self):
-    return self._out.choked
-
-  @property
-  def interested(self):
-    return self._out.interested
-
-  @interested.setter
-  def interested(self, value):
-    value = bool(value)
-    if value == self._out.interested:
-      return
-    self._out.interested = value
-    log.debug('Sending %sinterested to [%s]' % ('' if value else 'un', self._id))
-    # XXX(sync)
-    self._iostream.write(Command.wire(Command.INTERESTED) if self._out.interested
-                    else Command.wire(Command.NOT_INTERESTED))
-
-  @property
-  def healthy(self):
-    return self._in.healthy
-
+      yield self._wire.recv()
+  
+  #---- sends
+  @gen.coroutine
   def send_keepalive(self):
     if self._out.needs_ping:
       self._out.ping()
-      log.debug('Sending keepalive to [%s]' % self._id)
-      self._iostream.write(struct.pack('>I', 0))
+      yield super(Peer, self).send_keepalive()
 
-  def send_have(self, index):
-    log.debug('Sending have(%s) to [%s]' % (index, self._id))
-    self._iostream.write(Command.wire(Command.HAVE, index))
-
-  def send_bitfield(self, bitfield):
-    log.debug('Sending bitfield to [%s]' % self._id)
-    self._iostream.write(Command.wire(Command.BITFIELD, bitfield))
-
-  def send_cancel(self, request):
-    log.debug('Sending cancel %s to %s' % (request, self))
-    self._iostream.write(Command.wire(Command.CANCEL, request))
-
-  def send_request(self, request):
-    log.debug('Sending request %s to %s' % (request, self))
-    self._iostream.write(Command.wire(Command.REQUEST, request))
-
-  def choke(self):
+  def send_choke(self):
     self._in.choked = True
-    log.debug('Sending choke to [%s]' % self._id)
-    self._iostream.write(Command.wire(Command.CHOKE))
+    return super(Peer, self).send_choke()
 
-  def unchoke(self):
+  def send_unchoke(self):
     self._in.choked = False
-    log.debug('Sending unchoke to [%s]' % self._id)
-    self._iostream.write(Command.wire(Command.UNCHOKE))
+    return super(Peer, self).send_unchoke()
 
-  @gen.engine
+  @gen.coroutine
+  def send_interested(self):
+    if self._out.interested:  # already interested
+      return
+    self._out.interested = True
+    yield super(Peer, self).send_interested()
+
+  @gen.coroutine
+  def send_not_interested(self):
+    if not self._out.interested:  # already interested
+      return
+    self._out.interested = False
+    yield super(Peer, self).send_interested()
+
+  @gen.coroutine
   def send_piece(self, piece, callback=None):
-    if not self._out._interested or self._out._choked:
+    if not self._out.interested or self._out.choked:
       log.debug('Skipping send of %s to [%s] (interested:%s, choked:%s)' % (
-          piece, self._id, self._out._interested, self._out._choked))
+          piece, self._id, self._out.interested, self._out.choked))
       return
 
     # In case the piece is actually an unpopulated request, populate.
@@ -308,109 +307,74 @@ class Peer(object):
                     (yield gen.Task(self._session.filemanager.read, request)))
 
     yield gen.Task(self._iostream.write, Command.wire(Command.PIECE, piece))
-    self._out.sent(length)
-    if callback:
-      self._session.io_loop.add_callback(callback)
+    self._out.sent(piece.length)
 
-  # --- peer channel impls ---
+  # --- Wire impls
+  @gen.coroutine
+  def keepalive(self):
+    self._in.ping()
+
+  @gen.coroutine
   def choke(self):
+    log.debug('Peer [%s] choking us.' % self._id)
     self._out.choked = True
 
+  @gen.coroutine
   def unchoke(self):
+    log.debug('Peer [%s] unchoking us.' % self._id)
     self._out.choked = False
 
+  @gen.coroutine
   def interested(self):
+    log.debug('Peer [%s] interested.' % self._id)
     self._in.interested = True
 
+  @gen.coroutine
   def not_interested(self):
+    log.debug('Peer [%s] uninterested.' % self._id)
     self._in.interested = False
 
+  @gen.coroutine
   def have(self, index):
     self._bitfield[index] = True
-    self._session.pieces.have(piece)
+    log.debug('Peer [%s] has piece %s.' % (self._id, index))
+    self._session.pieces.have(index)
 
+  @gen.coroutine
   def bitfield(self, bitfield):
-    # ???
     self._session.pieces.remove(self._bitfield)
-    self._bitfield.fill(message_body)
+    self._bitfield = bitfield
     log.debug('Peer [%s] has %d/%d pieces.' % (
         self._id, sum((self._bitfield[k] for k in range(len(self._bitfield))), 0),
         len(self._bitfield)))
     self._session.pieces.add(self._bitfield)
 
+  @gen.coroutine
   def request(self, request):
-    # ???
     log.debug('Peer [%s] requested %s' % (self._id, request))
     if self._session.filemanager.covers(request):
       log.debug('   => we have %s, initiating send.' % request)
-      yield gen.Task(self.send_piece, request)
+      yield self.send_piece(request)
     else:
       log.debug('   => do not have %s, ignoring.' % request)
 
+  @gen.coroutine
   def cancel(self, request):
+    index, begin, length = struct.unpack('>III', message_body)
+    request = Request(index, begin, length)
+    log.debug('Peer [%s] canceling %s' % (self._id, request))
     self._in.cancel_request(request)
 
-  @gen.engine
+  @gen.coroutine
   def piece(self, piece):
+    log.debug('Received %s from [%s]' % (piece, self._id))
     self._session.scheduler.received(piece, from_peer=self)
     yield gen.Task(self._session.filemanager.write, piece)
     self._in.sent(len(message_body) - 8)
-
-  @gen.engine
-  def _recv_dispatch(self, message_id, message_body, callback=None):
-    # TODO(wickman): Split these into recv_ messages
-    if message_id == Command.CHOKE:
-      log.debug('Peer [%s] choking us.' % self._id)
-      self._out.choked = True
-    elif message_id == Command.UNCHOKE:
-      log.debug('Peer [%s] unchoking us.' % self._id)
-      self._out.choked = False
-    elif message_id == Command.INTERESTED:
-      log.debug('Peer [%s] interested.' % self._id)
-      self._in.interested = True
-    elif message_id == Command.NOT_INTERESTED:
-      log.debug('Peer [%s] uninterested.' % self._id)
-      self._in.interested = False
-    elif message_id == Command.HAVE:
-      piece, = struct.unpack('>I', message_body)
-      self._bitfield[piece] = True
-      log.debug('Peer [%s] has piece %s.' % (self._id, piece))
-      self._session.pieces.have(piece)
-    elif message_id == Command.BITFIELD:
-      self._session.pieces.remove(self._bitfield)
-      self._bitfield.fill(message_body)
-      log.debug('Peer [%s] has %d/%d pieces.' % (
-          self._id, sum((self._bitfield[k] for k in range(len(self._bitfield))), 0),
-          len(self._bitfield)))
-      self._session.pieces.add(self._bitfield)
-    elif message_id == Command.REQUEST:
-      index, begin, length = struct.unpack('>III', message_body)
-      request = Request(index, begin, length)
-      log.debug('Peer [%s] requested %s' % (self._id, request))
-      if self._session.filemanager.covers(request):
-        log.debug('   => we have %s, initiating send.' % request)
-        yield gen.Task(self.send_piece, request)
-      else:
-        log.debug('   => do not have %s, ignoring.' % request)
-    elif message_id == Command.PIECE:
-      index, begin = struct.unpack('>II', message_body[0:8])
-      piece = Piece(index, begin, len(message_body[8:]), message_body[8:])
-      log.debug('Received %s from [%s]' % (piece, self._id))
-      self._session.scheduler.received(piece, from_peer=self)
-      yield gen.Task(self._session.filemanager.write, piece)
-      self._in.sent(len(message_body) - 8)
-    elif message_id == Command.CANCEL:
-      index, begin, length = struct.unpack('>III', message_body)
-      request = Request(index, begin, length)
-      log.debug('Peer [%s] canceling %s' % (self._id, request))
-      self._in.cancel_request(request)
-    else:
-      raise Peer.BadMessage('Unknown message id: %s' % message_id)
-    if callback:
-      self._session.io_loop.add(callback)
 
   def disconnect(self):
     log.debug('Disconnecting from [%s]' % self._id)
     if self._iostream:
       self._iostream.close()
+      self._iostream = None
     self._active = False

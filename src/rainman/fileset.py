@@ -56,7 +56,6 @@ class fileslice(object):
     return 'fileslice(%r[%r,%r])' % (self._filename, self.start, self.stop)
 
 
-# TODO(wickman) Consider using namedtuple
 class Request(object):
   __slots__ = ('index', 'offset', 'length')
 
@@ -69,7 +68,7 @@ class Request(object):
     return hash((self.index, self.offset, self.length))
 
   def __str__(self):
-    return 'Request(%s[%s:%s]%s)' % (self.index, self.offset, self.offset + self.length)
+    return 'Request(%s[%s:%s])' % (self.index, self.offset, self.offset + self.length)
 
   def __eq__(self, other):
     return (self.index == other.index and
@@ -90,6 +89,10 @@ class Piece(Request):
 
 class FileSet(object):
   """A logical concatenation of files, chunked into chunk sizes."""
+  
+  @classmethod
+  def from_torrent(cls torrent):
+    return cls([(mif.name, mif.length) for mif in torrent.info.files], torrent.info.piece_size)
 
   def __init__(self, files, piece_size):
     """:param files: Ordered list of (filename, filesize) tuples.

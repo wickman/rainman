@@ -21,6 +21,7 @@ from twitter.common.dirutil import (
 from twitter.common import log
 
 
+# TODO(wickman) Probably this should have a bitfield on it?
 class FileManager(object):
   """Translates FileSet read/write operations to IOLoop operations via a ThreadPool."""
 
@@ -28,12 +29,11 @@ class FileManager(object):
 
   @classmethod
   def from_torrent(cls, torrent, **kw):
-    fs = FileSet([(mif.name, mif.length) for mif in torrent.info.files], torrent.info.piece_size)
-    return cls(fs, list(torrent.info.pieces), **kw)
+    return cls(FileSet.from_torrent(torrent), list(torrent.info.pieces), **kw)
 
   def __init__(self, fileset, piece_hashes=None, chroot=None, io_loop=None):
     self._fileset = fileset
-    self._pieces = piece_hashes or [chr(0) * 20] * self._fileset.num_pieces
+    self._pieces = piece_hashes or [b'\x00' * 20] * self._fileset.num_pieces
     self._actual_pieces = []
     self._fileset = fileset
     self._sliceset = SliceSet()
@@ -57,7 +57,8 @@ class FileManager(object):
     # test this
     assembled = 0
     for index in range(len(self._pieces) - 1):
-      if self.have(index): assembled += self._fileset.piece_size
+      if self.have(index):
+        assembled += self._fileset.piece_size
     if self.have(len(self._pieces) - 1):
       _, leftover = divmod(self.total_size, self._fileset.piece_size)
       assembled += self._fileset.piece_size if not leftover else leftover
@@ -102,7 +103,7 @@ class FileManager(object):
     if len(self._actual_pieces) != self._fileset.num_pieces:
       self._actual_pieces = list(self.iter_hashes())
       with open(self.hashfile, 'wb') as fp:
-        fp.write(''.join(self._actual_pieces))
+        fp.write(b''.join(self._actual_pieces))
     # cover the spans that we've succeeded in the sliceset
     for index in range(self._fileset.num_pieces):
       if self._actual_pieces[index] == self._pieces[index]:
@@ -232,7 +233,7 @@ class FileManager(object):
     piece_slice = self.to_slice(index, 0, self._fileset.piece_size)
     if piece_slice not in self._sliceset:
       # the piece isn't complete so don't bother with an expensive calculation
-      self._io_loop.add_callback(callback)
+      callback()
       return
     log.debug('FileIOPool.touch: Performing SHA1 on %s' % index)
     # Consider pushing this computation onto an IOPool

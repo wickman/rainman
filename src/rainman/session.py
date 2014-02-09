@@ -23,40 +23,6 @@ from twitter.common import log
 from twitter.common.quantity import Amount, Time
 
 
-class PieceSet(object):
-  RARE_THRESHOLD = 50
-
-  def __init__(self, length):
-    self._num_owners = array.array('B', [0] * length)
-    self._changed_pieces = 0
-    self._rarest = None
-
-  def have(self, index, value=True):
-    self._changed_pieces += 1
-    self._num_owners[index] += int(value)
-
-  def add(self, bitfield):
-    for k in range(len(bitfield)):
-      if bitfield[k]:
-        self.have(k)
-
-  def remove(self, bitfield):
-    for k in range(len(bitfield)):
-      if bitfield[k]:
-        self.have(k, False)
-
-  # TODO(wickman) Fix this if it proves to be too slow.
-  def rarest(self, count=None, owned=None):
-    if not self._rarest or self._changed_pieces >= PieceSet.RARE_THRESHOLD:
-      def exists_but_not_owned(pair):
-        index, count = pair
-        return count > 0 and (not owned or not owned[index])
-      self._rarest = sorted(filter(exists_but_not_owned, enumerate(self._num_owners)),
-                            key=lambda val: val[1])
-      self._changed_pieces = 0
-    return [val[0] for val in (self._rarest[:count] if count else self._rarest)]
-
-
 class Session(object):
   PEER_RETRY_INTERVAL  = Amount(10, Time.SECONDS)
   MAINTENANCE_INTERVAL = Amount(200, Time.MILLISECONDS)
@@ -65,7 +31,7 @@ class Session(object):
   def __init__(self, torrent, chroot=None, port=None, io_loop=None):
     self._torrent = torrent
     self._port = port
-    self._peers = None     # PeerSet
+    self._peers = None     # PeerSet: candidate peers
     self._listener = None  # PeerListener
     self._connections = {} # address => Peer
     self._dead = []
@@ -145,57 +111,22 @@ class Session(object):
 
   # ----- mutations
   @gen.coroutine
-  def add_peer(self, address, iostream=None):
-    log.info('Adding peer: %s (%s)' % (address, 'inbound' if iostream else 'outbound'))
+  def add_peer(self, address, iostream):
+    log.info('Adding peer: %s' % address)
     if address in self._connections:
       log.debug('  - already seen peer, skipping.')
-      if iostream:
-        iostream.close()
+      iostream.close()
       return
-    log.debug('Setting self._connections[%s] = None' % repr(address))
-    self._connections[address] = None
-    new_peer = Peer(address, self, functools.partial(self._add_peer_cb, address))
-    if iostream is None:
-      iostream = IOStream(socket.socket(socket.AF_INET, socket.SOCK_STREAM), io_loop=self.io_loop)
-      iostream.connect(address)
-    success = yield gen.Task(new_peer.handshake, iostream)
-    yield gen.Task(self.validate_peer, new_peer.address, new_peer, succeeded)
-
-  @gen.coroutine
-  def validate_peer(self, address, peer, succeeded):
-    log.debug('Add peer callback: %s:%s [peer value: %s]' % (address[0], address[1], peer))
-    if succeeded:
-      log.info('Session [%s] added peer %s:%s [%s]' % (self._peer_id, address[0], address[1],
-          peer.id))
-      # TODO(wickman) Check to see if the connected_peer is still connected, and replace if
-      # it has expired.
-      for connected_peer in self._connections.values():
-        if connected_peer and peer.id == connected_peer.id:
-          log.info('Session already established with %s, disconnecting new one.' % peer.id)
-          peer.disconnect()
-          break
-      else:
-        yield gen.Task(peer.send_bitfield, self._bitfield)
-        log.debug('Setting self._connections[%s] = %s' % (repr(address), peer))
-        self._connections[address] = peer
-        log.info('Starting ioloop for %s' % peer)
-        self._io_loop.add_callback(peer.run)
-    else:
-      log.debug('Session [%s] failed to negotiate with %s:%s' % (self._peer_id,
-        address[0], address[1]))
-      def expire_retry():
-        log.debug('Expiring retry timer for %s:%s' % address)
-        if address not in self._connections or self._connections[address] is not None:
-          log.error('Unexpected connection state for %s!' % address)
-        else:
-          log.debug('Popping self._connections[%s]' % repr(address))
-          self._connections.pop(address, None)
-      self._io_loop.add_timeout(
-          datetime.timedelta(0, self.PEER_RETRY_INTERVAL.as_(Time.SECONDS)),
-          expire_retry)
+    new_peer = Peer(address, iostream, self._torrent, self._filemanager)
+    yield new_peer.send_handshake(self.peer_id)
+    self._connections[address] = new_peer
+    self._scheduler.add_peer(new_peer)
+    self.io_loop.add_callback(new_peer.run)
 
   def maintenance(self):
     def add_new_connections():
+      # XXX need to cap the number of connections.  push peer set logic into client, and have it
+      # decide which peers to add.
       for address in self._peers:
         if address not in self._connections:
           self.add_peer(address)
@@ -218,18 +149,20 @@ class Session(object):
           # we completed a new piece
           log.debug('Completed piece %s' % k)
           for peer in filter(None, self._connections.values()):
+            # XXX sync
             peer.send_have(k)
           self._bitfield[k] = True
 
     def ping_peers_if_necessary():
       for peer in filter(None, self._connections.values()):
+        # XXX sync
         peer.send_keepalive()  # only sends if necessary
 
     add_new_connections()
     filter_dead_connections()
     broadcast_new_pieces()
     ping_peers_if_necessary()
-    
+
     self._io_loop.add_timeout(
         Session.MAINTENANCE_INTERVAL.as_(Time.MILLISECONDS),
         self.maintenance)

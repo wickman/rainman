@@ -21,9 +21,12 @@ from twitter.common.dirutil import (
 from twitter.common import log
 
 
-# TODO(wickman) Probably this should have a bitfield on it?
-class FileManager(object):
-  """Translates FileSet read/write operations to IOLoop operations via a ThreadPool."""
+class PieceManager(object):
+  """A Piece overlay on a FileSet.
+
+     Translates Requests to operations over a FileSet and keeps track of
+     live shas.
+  """
 
   DEFAULT_SPLAT_BYTES = 64 * 1024
 
@@ -31,7 +34,26 @@ class FileManager(object):
   def from_torrent(cls, torrent, **kw):
     return cls(FileSet.from_torrent(torrent), list(torrent.info.pieces), **kw)
 
-  def __init__(self, fileset, piece_hashes=None, chroot=None, io_loop=None):
+  @classmethod
+  def fill(cls, filename, size, splat=None):
+    "Fills file `filename` with `size` bytes from `splat` or 0s if splat is None."
+    splat = splat or b'\x00' * cls.DEFAULT_SPLAT_BYTES
+    splat_size = len(splat)
+    current_size = safe_size(filename)
+    assert current_size <= size
+    if current_size != size:
+      diff = size - current_size
+      with safe_open(filename, 'a+b') as fp:
+        while diff > 0:
+          if diff > splat_size:
+            fp.write(splat)
+            diff -= splat_size
+          else:
+            fp.write(splat[:diff])
+            diff = 0
+    return size - current_size
+
+  def __init__(self, fileset, piece_hashes=None, chroot=None):
     self._fileset = fileset
     self._pieces = piece_hashes or [b'\x00' * 20] * self._fileset.num_pieces
     self._actual_pieces = []
@@ -39,9 +61,11 @@ class FileManager(object):
     self._sliceset = SliceSet()
     self._chroot = chroot or tempfile.mkdtemp()
     safe_mkdir(self._chroot)
-    self._io_loop = io_loop or ioloop.IOLoop.instance()
-    self._iopool = IOPool(io_loop=self._io_loop)
     self._initialize()
+
+  def __contains__(self, block):
+    slice_ = self.to_slice(block)
+    return slice_ in self._sliceset
 
   #  --- piece initialization
   @property
@@ -63,25 +87,6 @@ class FileManager(object):
       _, leftover = divmod(self.total_size, self._fileset.piece_size)
       assembled += self._fileset.piece_size if not leftover else leftover
     return assembled
-
-  @classmethod
-  def fill(cls, filename, size, splat=None):
-    "Fills file `filename` with `size` bytes from `splat` or 0s if splat is None."
-    splat = splat or b'\x00' * cls.DEFAULT_SPLAT_BYTES
-    splat_size = len(splat)
-    current_size = safe_size(filename)
-    assert current_size <= size
-    if current_size != size:
-      diff = size - current_size
-      with safe_open(filename, 'a+b') as fp:
-        while diff > 0:
-          if diff > splat_size:
-            fp.write(splat)
-            diff -= splat_size
-          else:
-            fp.write(splat[:diff])
-            diff = 0
-    return size - current_size
 
   @property
   def hashfile(self):
@@ -107,12 +112,15 @@ class FileManager(object):
     # cover the spans that we've succeeded in the sliceset
     for index in range(self._fileset.num_pieces):
       if self._actual_pieces[index] == self._pieces[index]:
+        # XXX this is buggy for tail pieces -- but it's probably ok?
         self._sliceset.add(self.to_slice(index, 0, self._fileset.piece_size))
 
   # ---- helpers
-  def to_slice(self, index, begin, length):
-    start = index * self._fileset.piece_size + begin
-    stop = min(start + length, self._fileset.size)
+  def to_slice(self, block):
+    if not isinstance(block, Request):
+      raise TypeError('to_slice expects Request, got %s' % block)
+    start = block.index * self._fileset.piece_size + block.begin
+    stop = min(start + block.length, self._fileset.size)
     return slice(start, stop)
 
   def update_cache(self, index):
@@ -126,20 +134,18 @@ class FileManager(object):
     return self._pieces[index] == self._actual_pieces[index]
 
   def covers(self, piece):
-    """
-      Whether or not this FileManager contains all pieces covered by this piece slice.
-    """
-    piece_slice = self.to_slice(piece.index, piece.offset, piece.length)
+    "Does this PieceManager cover :class:`Request` piece?"
+    piece_slice = self.to_slice(piece)
     piece_start_index = piece_slice.start / self._fileset.piece_size
     piece_stop_index = piece_slice.stop / self._fileset.piece_size
     return all(self.have(index) for index in range(piece_start_index, piece_stop_index))
 
-  def iter_slices(self, index, begin, length):
+  def iter_slices(self, piece):
     """
       Given (piece index, begin, length), return an iterator over fileslice objects
       that cover the interval.
     """
-    piece = self.to_slice(index, begin, length)
+    piece = self.to_slice(piece)
     offset = 0
     for (fn, fs) in self._fileset.files:
       if offset + fs <= piece.start:
@@ -154,10 +160,24 @@ class FileManager(object):
                         slice(overlap.start - offset, overlap.stop - offset))
       offset += fs
 
-  def iter_hashes(self):
-    """iterate over the sha1 hashes, blocking."""
-    for chunk in self.iter_pieces():
-      yield hashlib.sha1(chunk).digest()
+  def piece_size(self, index):
+    num_pieces, leftover = divmod(self._fileset.size, self._fileset.piece_size)
+    num_pieces += leftover > 0
+    assert index < num_pieces, 'Got index (%s) but num_pieces is %s' % (index, num_pieces)
+    if not leftover:
+      return self._fileset.piece_size
+    if index == num_pieces - 1:
+      return leftover
+    return self._fileset.piece_size
+
+  def iter_blocks(self, index, block_size):
+    """yield :class:`Request` objects for the piece at index with a given block size"""
+    piece_size = self.piece_size(index)
+    for start_offset in range(0, piece_size, block_size):
+      yield Request(
+          index,
+          start_offset,
+          block_size if start_offset + block_size <= piece_size else piece_size % request_size)
 
   def iter_pieces(self):
     """iterate over the pieces backed by this fileset.  blocking."""
@@ -176,6 +196,31 @@ class FileManager(object):
     if len(chunk) > 0:
       yield chunk
 
+  def iter_hashes(self):
+    """iterate over the sha1 hashes, blocking."""
+    for chunk in self.iter_pieces():
+      yield hashlib.sha1(chunk).digest()
+
+  def destroy(self):
+    safe_rmtree(self._chroot)
+
+
+# TODO(wickman) Probably this should have a bitfield on it?
+class PieceBroker(PieceManager):
+  """Translates FileSet read/write operations to IOLoop operations via a ThreadPool."""
+
+  def __init__(self, fileset, piece_hashes=None, chroot=None, io_loop=None):
+    super(PieceManager, self).__init__(fileset, piece_hashes, chroot)
+    self._bitfield = Bitfield(len(self._pieces))
+    for index, (piece, actual_piece) in enumerate(zip(self._pieces, self._actual_pieces)):
+      self._bitfield[index] = piece == actual_piece
+    self._io_loop = io_loop or ioloop.IOLoop.instance()
+    self._iopool = IOPool(io_loop=self._io_loop)
+
+  @property
+  def bitfield(self):
+    return self._bitfield
+
   # ---- io_loop interface
   def whole_piece(self, index):
     num_pieces, leftover = divmod(self._fileset.size, self._fileset.piece_size)
@@ -192,9 +237,9 @@ class FileManager(object):
        Returns immediately, calls callback(data) when the read is complete.
     """
     if not isinstance(request, Request):
-      raise TypeError('FileManager.read expects request of type request, got %s' % type(request))
+      raise TypeError('PieceManager.read expects request of type request, got %s' % type(request))
 
-    slices = list(self._fileset.iter_slices(request.index, request.offset, request.length))
+    slices = list(self._fileset.iter_slices(request))
     read_slices = yield [
         gen.Task(self._iopool.add, fileslice.read, slice_.rooted_at(self._chroot))
         for slice_ in slices]
@@ -208,26 +253,26 @@ class FileManager(object):
       (and hash cache flush) finishes.
     """
     if not isinstance(piece, Piece):
-      raise TypeError('FileManager.write expects piece of type Piece, got %s' % type(piece))
+      raise TypeError('PieceManager.write expects piece of type Piece, got %s' % type(piece))
 
     if self.to_slice(piece.index, piece.offset, piece.length) in self._sliceset:
       log.debug('Dropping dupe write(%s)' % piece)
-      self._io_loop.add_callback(callback)
+      callback()
       return
 
     slices = []
     offset = 0
-    for slice_ in self._fileset.iter_slices(piece.index, piece.offset, piece.length):
+    for slice_ in self._fileset.iter_slices(piece):
       slices.append(
           gen.Task(self._iopool.add, fileslice.write, slice_.rooted_at(self._chroot),
                    piece.block[offset:offset + slice_.length]))
       offset += slice_.length
     yield slices
-    yield gen.Task(self.touch, piece.index, piece.offset, piece.length)
+    yield gen.Task(self.validate, piece.index, piece.offset, piece.length)
     callback()
 
   @gen.engine
-  def touch(self, index, begin, length, callback):
+  def validate(self, index, begin, length, callback):
     log.debug('FileIOPool.sliceset.add(%s)' % self.to_slice(index, begin, length))
     self._sliceset.add(self.to_slice(index, begin, length))
     piece_slice = self.to_slice(index, 0, self._fileset.piece_size)
@@ -241,6 +286,7 @@ class FileManager(object):
         (yield gen.Task(self.read, self.whole_piece(index)))).digest()
     if self._pieces[index] == self._actual_pieces[index]:
       log.debug('FileIOPool.touch: Finished piece %s!' % index)
+      self._bitfield[index] = True
       self.update_cache(index)
     else:
       # the hash was incorrect.  none of this data is good.
@@ -252,5 +298,5 @@ class FileManager(object):
     self._iopool.stop()
 
   def destroy(self):
-    safe_rmtree(self._chroot)
+    super(PieceManager, self).destroy()
     self.stop()

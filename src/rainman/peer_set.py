@@ -1,6 +1,6 @@
 class PeerSet(object):
   """A set of Peers for whom connections may be established.
-  
+
      In practice this periodically refreshes from a tracker.
   """
 
@@ -8,7 +8,7 @@ class PeerSet(object):
   # with which we can establish sessions.
   def __init__(self, session, io_loop=None):
     """Currently needs:
-       
+
       session.torrent.announce
       session.torrent.info
       session.io_loop
@@ -17,8 +17,8 @@ class PeerSet(object):
       session.uploaded_bytes
       session.downloaded_bytes
       session.assembled_bytes
-    """ 
-   
+    """
+
     self._session = session
     self._tracker = session.torrent.announce
     self._io_loop = io_loop or session.io_loop or tornado.ioloop.IOLoop.instance()

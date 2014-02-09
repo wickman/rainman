@@ -35,12 +35,18 @@ Peer:
   address
   uploaded
   downloaded
-  bitfield
+  bitfield    # remote bitfield
   filemanager
-  register_callback()  # callback on bitfield change
+  register_have_callback(callback) # invokes callback([have], [not_have])
+  run()  # runs io loop
+  stop()  # tells io loop to terminate
 
 
 Minimum integration test:
+  dir = create_dataset()
+  torrent = make_torrent(dir)
+  filemanager1 = FileManager.from_torrent(torrent, chroot=dir)
+  filemanager2 = FileManager.from_torrent(torrent)
   seed = Peer(filemanager1)  # full file
   peer = Peer(filemanager2)  # empty file
   seed_session = TorrentSession(filemanager1).add_peer(peer)

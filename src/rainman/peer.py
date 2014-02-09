@@ -12,79 +12,6 @@ from twitter.common import log
 from twitter.common.quantity import Time, Amount
 
 
-class PeerHandshake(object):
-  class InvalidHandshake(Exception): pass
-
-  LENGTH = 68
-  PROTOCOL_STR = 'BitTorrent protocol'
-  EXTENSION_BITS = {
-    44: 'Extension protocol',
-    62: 'Fast peers',
-    64: 'DHT',
-  }
-
-  SPANS = [
-    slice( 0,  1),  # First byte = 19
-    slice( 1, 20),  # "BitTorrent protocol"
-    slice(20, 28),  # Reserved bits
-    slice(28, 48),  # Metainfo hash
-    slice(48, 68)   # Peer id
-  ]
-
-  @staticmethod
-  def make(info, peer_id=None):
-    """
-      Make a Peer-Peer handshake.  If peer_id is omitted, make only the handshake prefix.
-    """
-    if isinstance(info, MetaInfo):
-      hash = hashlib.sha1(info.raw()).digest()
-    elif isinstance(info, str) and len(str) == 20:
-      hash = info
-    else:
-      raise ValueError('Expected MetaInfo or hash, got %s' % repr(info))
-    # XXX(PY3)
-    handshake = [chr(len(PeerHandshake.PROTOCOL_STR)), PeerHandshake.PROTOCOL_STR,
-                 chr(0) * 8, hash, peer_id if peer_id else '']
-    return ''.join(handshake)
-
-  @classmethod
-  def error(cls, msg):
-    raise cls.InvalidHandshake('Invalid handshake: %s' % msg)
-
-  def __init__(self, handshake_bytes):
-    (handshake_byte, protocol_str, self._reserved_bits, self._hash, self._peer_id) = map(
-        handshake_bytes.__getitem__, PeerHandshake.SPANS)
-    if handshake_byte != chr(len(PeerHandshake.PROTOCOL_STR)):
-      self.error('Initial byte of handshake should be 0x%x' % len(PeerHandshake.PROTOCOL_STR))
-    if protocol_str != PeerHandshake.PROTOCOL_STR:
-      self.error('This is not the BitTorrent protocol!')
-    self._reserved_bits = struct.unpack('>Q', self._reserved_bits)[0]
-
-  @property
-  def hash(self):
-    return self._hash
-
-  @property
-  def peer_id(self):
-    return self._peer_id
-
-  @staticmethod
-  def is_set(ull, bit):
-    return bool(ull & (1 << (64 - bit)))
-
-  @property
-  def dht(self):
-    return self.is_set(self._reserved_bits, self.EXTENSION_BITS['DHT'])
-
-  @property
-  def fast_peers(self):
-    return self.is_set(self._reserved_bits, self.EXTENSION_BITS['Fast peers'])
-
-  @property
-  def extended(self):
-    return self.is_set(self._reserved_bits, self.EXTENSION_BITS['Extension protocol'])
-
-
 class ConnectionState(object):
   BW_COLLECTION_INTERVAL = Amount(30, Time.SECONDS)
   MIN_KEEPALIVE_WINDOW = Amount(2, Time.MINUTES)
@@ -154,31 +81,30 @@ class ConnectionState(object):
 
 class Peer(Wire):
   """Peer state
-  
+
   Requires:
     session.torrent
-    session.peer_id
     session.filemanager
-    session.pieces
-    session.scheduler
   """
 
   class Error(Exception): pass
   class BadMessage(Error): pass
   class PeerInactive(Error): pass
 
-  def __init__(self, address, session):
+  def __init__(self, address, iostream, torrent, filemanager):
     self._id = None
     self._active = True
     self._address = address
-    self._session = session
-    self._hash = hashlib.sha1(session.torrent.info.raw()).digest()
-    self._bitfield = Bitfield(session.torrent.info.num_pieces)
+    self._filemanager = filemanager
+    self._hash = hashlib.sha1(torrent.info.raw()).digest()
+    self._bitfield = Bitfield(torrent.info.num_pieces)  # remote bitfield
     self._in = ConnectionState()
     self._out = ConnectionState()
-    self._iostream = None
+    self._iostream = iostream
+    self._bitfield_callbacks = []
+    self._receive_callbacks = []
     super(Peer, self).__init__()
-  
+
   @property
   def iostream(self):
     if self._iostream is None:
@@ -228,43 +154,28 @@ class Peer(Wire):
   def is_healthy(self):
     return self._in.healthy
 
-  @gen.coroutine
-  def handshake(self, iostream):
-    log.debug('Session [%s] starting handshake with %s:%s' % (
-        self._session.peer_id,
-        self._address[0],
-        self._address[1]))
+  # -- register callbacks
+  def register_bitfield_change(self, callback):
+    self._bitfield_callbacks.append(callback)
 
-    handshake_full = PeerHandshake.make(self._session.torrent.info, self._session.peer_id)
-    read_handshake, _ = yield [
-        gen.Task(iostream.read_bytes, PeerHandshake.LENGTH),
-        gen.Task(iostream.write, handshake_full)]
+  def register_piece_receipt(self, callback):
+    self._piece_callbacks.append(callback)
 
-    succeeded = False
-    try:
-      handshake = PeerHandshake(read_handshake)
-      if handshake.hash == self._hash:
-        self._id = handshake.peer_id
-        self._wire = Wire(self, iostream)
-        succeeded = True
-      else:
-        log.debug('Session [%s] got mismatched torrent hashes.' % self._session.peer_id)
-    except PeerHandshake.InvalidHandshake as e:
-      log.debug('Session [%s] got bad handshake with %s:%s: %s' % (self._session.peer_id,
-        self._address[0], self._address[1], e))
-      iostream.close()
+  def _invoke_bitfield_change(self, haves, have_nots):
+    for callback in self._bitfield_callbacks:
+      callback(haves, have_nots)
 
-    log.debug('Session [%s] finishing handshake with %s:%s' % (self._session.peer_id,
-        self._address[0], self._address[1]))
-
-    raise gen.Return(succeeded)
+  def _invoke_piece_receipt(self, piece):
+    for callback in self._piece_callbacks:
+      callback(piece, self.id)
 
   # -- runner
   @gen.engine
   def run(self):
+    yield self.send_bitfield()
     while self._active:
-      yield self._wire.recv()
-  
+      yield self.recv()
+
   #---- sends
   @gen.coroutine
   def send_keepalive(self):
@@ -304,7 +215,7 @@ class Peer(Wire):
     # In case the piece is actually an unpopulated request, populate.
     if isinstance(piece, request):
       piece = Piece(request.index, request.offset, request.length,
-                    (yield gen.Task(self._session.filemanager.read, request)))
+                    (yield gen.Task(self._filemanager.read, request)))
 
     yield gen.Task(self._iostream.write, Command.wire(Command.PIECE, piece))
     self._out.sent(piece.length)
@@ -338,22 +249,30 @@ class Peer(Wire):
   def have(self, index):
     self._bitfield[index] = True
     log.debug('Peer [%s] has piece %s.' % (self._id, index))
-    self._session.pieces.have(index)
+    self._invoke_bitfield_change([index], [])
 
   @gen.coroutine
   def bitfield(self, bitfield):
-    self._session.pieces.remove(self._bitfield)
+    # test
+    haves, have_nots = [], []
+    for index, (old, new) in enumerate(zip(self._bitfield, bitfield)):
+      if old and not new:
+        have_nots.append(index)
+      if new and not old:
+        haves.append(index)
     self._bitfield = bitfield
-    log.debug('Peer [%s] has %d/%d pieces.' % (
-        self._id, sum((self._bitfield[k] for k in range(len(self._bitfield))), 0),
+    log.debug('Peer [%s] now has %d/%d pieces.' % (
+        self._id,
+        sum((self._bitfield[k] for k in range(len(self._bitfield))), 0),
         len(self._bitfield)))
-    self._session.pieces.add(self._bitfield)
+    self._invoke_bitfield_change(haves, have_nots)
 
   @gen.coroutine
   def request(self, request):
     log.debug('Peer [%s] requested %s' % (self._id, request))
-    if self._session.filemanager.covers(request):
+    if self._filemanager.covers(request):
       log.debug('   => we have %s, initiating send.' % request)
+      # XXX add to queue, allow scheduler to determine when to initiate
       yield self.send_piece(request)
     else:
       log.debug('   => do not have %s, ignoring.' % request)
@@ -368,9 +287,9 @@ class Peer(Wire):
   @gen.coroutine
   def piece(self, piece):
     log.debug('Received %s from [%s]' % (piece, self._id))
-    self._session.scheduler.received(piece, from_peer=self)
-    yield gen.Task(self._session.filemanager.write, piece)
-    self._in.sent(len(message_body) - 8)
+    self._in.sent(piece.length)
+    yield gen.Task(self._filemanager.write, piece)
+    self._invoke_piece_receipt(piece)
 
   def disconnect(self):
     log.debug('Disconnecting from [%s]' % self._id)

@@ -91,9 +91,7 @@ class Scheduler(object):
     start as the current optimistic unchoke as anywhere else in the rotation.
 
     Uses:
-      session.torrent
       session.pieces
-      session.bitfield
       session.filemanager
       session.io_loop
       session.owners
@@ -114,34 +112,10 @@ class Scheduler(object):
     self._timer = None
     self._active = True
 
-  # should probably be a method on filemanager
-  def piece_size(self, index):
-    num_pieces, leftover = divmod(self._session.torrent.info.length,
-                                  self._session.torrent.info.piece_size)
-    num_pieces += leftover > 0
-    assert index < num_pieces, 'Got index (%s) but num_pieces is %s' % (index, num_pieces)
-    if not leftover:
-      return self._session.torrent.info.piece_size
-    if index == num_pieces - 1:
-      return leftover
-    return self._session.torrent.info.piece_size
-
-  # ditto
-  def split_piece(self, index):
-    request_size = int(self.REQUEST_SIZE.as_(Data.BYTES))
-    ps = self.piece_size(index)
-    for k in range(0, ps, request_size):
-      yield Piece(index, k, request_size if k + request_size <= ps else ps % request_size)
-
-  # ditto
-  def to_slice(self, piece):
-    start = piece.index * self._session.torrent.info.piece_size + piece.offset
-    return slice(start, start + piece.length)
-
   @gen.engine
   def schedule(self):
     while self._active:
-      session_bitfield = self._session.bitfield
+      session_bitfield = self._session.bitfield  # filemanager.bitfield
       rarest = [piece for piece in self._session.pieces.rarest() if not session_bitfield[index]]
       rarest = rarest[:self.CONSIDERED_PIECES]
       random.shuffle(rarest)
@@ -152,6 +126,7 @@ class Scheduler(object):
         owners = [peer for peer in self._session.owners(piece_index)]
         if not owners:
           continue
+
         # don't bother scheduling unless there are unchoked peers or peers
         # we have not told we are interested
         if len([peer for peer in owners if not peer.choked or not peer.interested]) == 0:
@@ -159,21 +134,22 @@ class Scheduler(object):
         if self._requests.outstanding > Scheduler.MAX_REQUESTS:
           log.debug('Hit max requests, waiting.')
           yield gen.Task(self._session.io_loop.add_timeout, Scheduler.INNER_YIELD)
+
         # subpiece nomenclature is "block"
-        for subpiece in list(self.split_piece(piece_index)):
-          if self.to_slice(subpiece) not in self._session.filemanager.slices and (
-              subpiece not in self._requests):
+        request_size = self.REQUEST_SIZE.as_(Data.BYTES)
+        for block in self._session.filemanager.iter_blocks(piece_index, request_size):
+          if block not in self._session.filemanager and block not in self._requests:
             random_peer = random.choice(owners)
             if random_peer.choked:
               if not random_peer.interested:
                 log.debug('Want to request %s from %s but we are choked, setting interested.' % (
-                 subpiece, random_peer))
+                  block, random_peer))
               random_peer.interested = True
               continue
-            log.debug('Scheduler requesting %s from peer [%s].' % (subpiece, random_peer))
+            log.debug('Scheduler requesting %s from peer [%s].' % (block, random_peer))
             # XXX sync
-            random_peer.send_request(subpiece)
-            self._requests.add(subpiece, random_peer)
+            random_peer.send_request(block)
+            self._requests.add(block, random_peer)
 
       now = time.time()
       yield gen.Task(self._session.io_loop.add_timeout, Scheduler.OUTER_YIELD)

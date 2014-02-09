@@ -51,7 +51,7 @@ class Command(object):
   REQUEST        = 6
   PIECE          = 7
   CANCEL         = 8
-  
+
   NAMES = {
     KEEPALIVE: 'KEEPALIVE',
     CHOKE: 'CHOKE',
@@ -64,7 +64,7 @@ class Command(object):
     PIECE: 'PIECE',
     CANCEL: 'CANCEL',
   }
-  
+
   @classmethod
   def to_string(cls, command):
     return cls.NAMES.get(command, 'UNKNOWN')
@@ -234,7 +234,7 @@ class Wire(Interface):
   @abstractmethod
   def piece(self, piece):
     pass
-  
+
   # ---- Receive interface.
   @gen.coroutine
   def recv(self):

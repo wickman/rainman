@@ -89,7 +89,7 @@ class Piece(Request):
 
 class FileSet(object):
   """A logical concatenation of files, chunked into chunk sizes."""
-  
+
   @classmethod
   def from_torrent(cls torrent):
     return cls([(mif.name, mif.length) for mif in torrent.info.files], torrent.info.piece_size)

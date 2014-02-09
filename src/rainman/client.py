@@ -14,10 +14,10 @@ class Client(object):
     self.torrents = {}   # hash => torrent
     self.databases = {}  # hash => FileManager
     self.sessions = {}   # hash => TorrentSession
-  
+
   def add_torrent(self, torrent, chroot=None):
     pass
-  
+
   def remove_torrent(self, torrent):
     pass
 

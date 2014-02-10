@@ -65,8 +65,7 @@ class PieceManager(object):
     self._initialize()
 
   def __contains__(self, block):
-    slice_ = self.to_slice(block)
-    return slice_ in self._sliceset
+    return self.covers(block)
 
   #  --- piece initialization
   @property
@@ -93,6 +92,22 @@ class PieceManager(object):
   def hashfile(self):
     return os.path.join(self._chroot, '.%s.pieces' % self._fileset.hash)
 
+  def whole_piece(self, index):
+    num_pieces, leftover = divmod(self._fileset.size, self._fileset.piece_size)
+    num_pieces += leftover > 0
+    assert index < num_pieces
+    if not leftover or index < num_pieces - 1:
+      return Request(index, 0, self._fileset.piece_size)
+    return Request(index, 0, leftover)
+
+  def to_slice(self, block):
+    if not isinstance(block, Request):
+      raise TypeError('to_slice expects Request, got %s' % block)
+    start = block.index * self._fileset.piece_size + block.offset
+    stop = min(start + block.length, self._fileset.size)
+    return slice(start, stop)
+
+  # TODO(wickman) make this async via the IOPool?
   def _initialize(self):
     touched = 0
     total_size = 0
@@ -113,17 +128,9 @@ class PieceManager(object):
     # cover the spans that we've succeeded in the sliceset
     for index in range(self._fileset.num_pieces):
       if self._actual_pieces[index] == self._pieces[index]:
-        # XXX this is buggy for tail pieces -- but it's probably ok?
-        self._sliceset.add(self.to_slice(index, 0, self._fileset.piece_size))
+        self._sliceset.add(self.to_slice(self.whole_piece(index)))
 
   # ---- helpers
-  def to_slice(self, block):
-    if not isinstance(block, Request):
-      raise TypeError('to_slice expects Request, got %s' % block)
-    start = block.index * self._fileset.piece_size + block.begin
-    stop = min(start + block.length, self._fileset.size)
-    return slice(start, stop)
-
   def update_cache(self, index):
     # TODO(wickman)  Cache this filehandle and do seek/write/flush.  It current takes
     # 1ms per call.
@@ -137,29 +144,9 @@ class PieceManager(object):
   def covers(self, piece):
     "Does this PieceManager cover :class:`Request` piece?"
     piece_slice = self.to_slice(piece)
-    piece_start_index = piece_slice.start / self._fileset.piece_size
-    piece_stop_index = piece_slice.stop / self._fileset.piece_size
-    return all(self.have(index) for index in range(piece_start_index, piece_stop_index))
-
-  def iter_slices(self, piece):
-    """
-      Given (piece index, begin, length), return an iterator over fileslice objects
-      that cover the interval.
-    """
-    piece = self.to_slice(piece)
-    offset = 0
-    for (fn, fs) in self._fileset.files:
-      if offset + fs <= piece.start:
-        offset += fs
-        continue
-      if offset >= piece.stop:
-        break
-      file = slice(offset, offset + fs)
-      overlap = slice(max(file.start, piece.start), min(file.stop, piece.stop))
-      if overlap.start < overlap.stop:
-        yield fileslice(os.path.join(self._chroot, fn),
-                        slice(overlap.start - offset, overlap.stop - offset))
-      offset += fs
+    piece_start_index = piece_slice.start // self._fileset.piece_size
+    piece_stop_index = (piece_slice.stop - 1) // self._fileset.piece_size
+    return all(self.have(index) for index in range(piece_start_index, piece_stop_index + 1))
 
   def piece_size(self, index):
     num_pieces, leftover = divmod(self._fileset.size, self._fileset.piece_size)
@@ -206,7 +193,6 @@ class PieceManager(object):
     safe_rmtree(self._chroot)
 
 
-# TODO(wickman) Probably this should have a bitfield on it?
 class PieceBroker(PieceManager):
   """Translates FileSet read/write operations to IOLoop operations via a ThreadPool."""
 
@@ -218,18 +204,12 @@ class PieceBroker(PieceManager):
     self._io_loop = io_loop or ioloop.IOLoop.instance()
     self._iopool = IOPool(io_loop=self._io_loop)
 
+  # TODO(wickman) This code should validate that blocks are not larger than pieces throughout.
   @property
   def bitfield(self):
     return self._bitfield
 
   # ---- io_loop interface
-  def whole_piece(self, index):
-    num_pieces, leftover = divmod(self._fileset.size, self._fileset.piece_size)
-    num_pieces += leftover > 0
-    assert index < num_pieces
-    if not leftover or index < num_pieces - 1:
-      return Request(index, 0, self._fileset.piece_size)
-    return Request(index, 0, leftover)
 
   @gen.engine
   def read(self, request, callback):
@@ -256,7 +236,7 @@ class PieceBroker(PieceManager):
     if not isinstance(piece, Piece):
       raise TypeError('PieceManager.write expects piece of type Piece, got %s' % type(piece))
 
-    if self.to_slice(piece.index, piece.offset, piece.length) in self._sliceset:
+    if self.to_slice(piece) in self._sliceset:
       log.debug('Dropping dupe write(%s)' % piece)
       callback()
       return
@@ -269,35 +249,43 @@ class PieceBroker(PieceManager):
                    piece.block[offset:offset + slice_.length]))
       offset += slice_.length
     yield slices
-    yield gen.Task(self.validate, piece.index, piece.offset, piece.length)
+    yield gen.Task(self.validate, piece)
     callback()
 
+  # XXX(wickman) This logic is actually incorrect when the block is bigger than a piece.
+  # Consider correcting that, though it isn't a big priority.
   @gen.engine
-  def validate(self, index, begin, length, callback):
-    log.debug('FileIOPool.sliceset.add(%s)' % self.to_slice(index, begin, length))
-    self._sliceset.add(self.to_slice(index, begin, length))
-    piece_slice = self.to_slice(index, 0, self._fileset.piece_size)
-    if piece_slice not in self._sliceset:
+  def validate(self, piece, callback):
+    whole_piece = self.whole_piece(piece.index)
+    piece_slice = self.to_slice(piece)
+    full_slice = self.to_slice(whole_piece)
+
+    log.debug('FileIOPool.sliceset.add(%s)' % piece_slice)
+
+    self._sliceset.add(piece_slice)
+    if full_slice not in self._sliceset:
       # the piece isn't complete so don't bother with an expensive calculation
       callback()
       return
-    log.debug('FileIOPool.touch: Performing SHA1 on %s' % index)
+
+    log.debug('FileIOPool.touch: Performing SHA1 on piece %s' % piece.index)
     # Consider pushing this computation onto an IOPool
-    self._actual_pieces[index] = hashlib.sha1(
-        (yield gen.Task(self.read, self.whole_piece(index)))).digest()
-    if self._pieces[index] == self._actual_pieces[index]:
-      log.debug('FileIOPool.touch: Finished piece %s!' % index)
-      self._bitfield[index] = True
-      self.update_cache(index)
+    self._actual_pieces[piece.index] = hashlib.sha1(
+        (yield gen.Task(self.read, whole_piece))).digest()
+    if self._pieces[piece.index] == self._actual_pieces[piece.index]:
+      log.debug('FileIOPool.touch: Finished piece %s!' % piece.index)
+      self._bitfield[piece.index] = True
+      self.update_cache(piece.index)
     else:
       # the hash was incorrect.  none of this data is good.
-      log.debug('FileIOPool.touch: Corrupt piece %s, erasing extent %s' % (index, piece_slice))
-      self._sliceset.erase(piece_slice)
+      log.debug('FileIOPool.touch: Corrupt piece %s, erasing extent %s' % (
+          piece.index, full_slice))
+      self._sliceset.erase(full_slice)
     callback()
 
   def stop(self):
     self._iopool.stop()
 
   def destroy(self):
-    super(PieceManager, self).destroy()
+    super(PieceBroker, self).destroy()
     self.stop()

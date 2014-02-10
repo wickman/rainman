@@ -3,6 +3,7 @@ import math
 import os
 import struct
 
+from twitter.common import log
 from twitter.common.lang import Compatibility
 
 
@@ -43,9 +44,11 @@ class fileslice(object):
       data = fp.read(self.length)
       if len(data) != self.length:
         raise self.ReadError('File is truncated at this slice!')
+      log.debug('%s read %d bytes [%s]' % (self, self.length, data))
       return data
 
   def write(self, data):
+    log.debug('%s writing %d bytes [%s]' % (self, len(data), data))
     if len(data) != (self.stop - self.start):
       raise self.WriteError('Block must be of appropriate size!')
     with open(self._filename, 'r+b') as fp:
@@ -135,13 +138,13 @@ class FileSet(object):
     """a sha hash uniquely representing the filename,filesize pair list."""
     return self._hash
 
-  def iter_slices(self, index, begin, length):
+  def iter_slices(self, request):
     """
       Given (piece index, begin, length), return an iterator over fileslice objects
       that cover the interval.
     """
-    piece = slice(index * self._piece_size + begin,
-                  index * self._piece_size + begin + length)
+    piece = slice(request.index * self._piece_size + request.offset,
+                  request.index * self._piece_size + request.offset + request.length)
     offset = 0
     for (fn, fs) in self._files:
       if offset + fs <= piece.start:

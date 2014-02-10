@@ -3,9 +3,10 @@ python_test_suite(name = 'all',
     pants(':test_bandwidth'),
     pants(':test_bitfield'),
     pants(':test_codec'),
-    pants(':test_filemanager'),
     pants(':test_fileset'),
     pants(':test_iopool'),
+    pants(':test_piece_broker'),
+    pants(':test_piece_manager'),
     pants(':test_sliceset'),
     pants(':test_tdm'),
     pants(':test_wire')
@@ -27,11 +28,6 @@ python_tests(name = 'test_codec',
   dependencies = [pants('src/rainman')]
 )
 
-python_tests(name = 'test_filemanager',
-  sources = ['test_filemanager.py'],
-  dependencies = [pants('src/rainman')]
-)
-
 python_tests(name = 'test_fileset',
   sources = ['test_fileset.py'],
   dependencies = [pants('src/rainman')]
@@ -39,6 +35,19 @@ python_tests(name = 'test_fileset',
 
 python_tests(name = 'test_iopool',
   sources = ['test_iopool.py'],
+  dependencies = [pants('src/rainman')]
+)
+
+python_tests(name = 'test_piece_broker',
+  sources = ['test_piece_broker.py'],
+  dependencies = [
+    python_requirement('twitter.common.contextutil'),
+    pants('src/rainman'),
+  ]
+)
+
+python_tests(name = 'test_piece_manager',
+  sources = ['test_piece_manager.py'],
   dependencies = [pants('src/rainman')]
 )
 

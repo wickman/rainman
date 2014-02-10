@@ -5,33 +5,20 @@ import struct
 import tempfile
 
 from rainman.fileset import FileSet
-from rainman.filemanager import FileManager
+from rainman.piece_manager import PieceManager
 
 import pytest
 
 
-def test_bad_input():
-  bad_inputs = [
-    ((), -1),
-    ((), 0),
-    (('valid', 20), 1),
-    ([('morf', -23)], 1),
-    ([(int, type)], 'bork')
-  ]
-  for input in bad_inputs:
-    with pytest.raises(ValueError):
-      FileSet(*input)
-
-
 def test_empty_input():
-  fs = FileManager(FileSet((), 1))
-  chunks = list(fs.iter_pieces())
-  hashes = list(fs.iter_hashes())
+  pm = PieceManager(FileSet((), 1))
+  chunks = list(pm.iter_pieces())
+  hashes = list(pm.iter_hashes())
   try:
     assert chunks == []
     assert hashes == []
   finally:
-    fs.destroy()
+    pm.destroy()
 
 
 def test_single():
@@ -45,9 +32,9 @@ def test_single():
   ]
 
   for pair in pairs:
-    fs = FileManager(FileSet([('hello_world', pair[0])], pair[1]))
-    chunks = list(fs.iter_pieces())
-    hashes = list(fs.iter_hashes())
+    pm = PieceManager(FileSet([('hello_world', pair[0])], pair[1]))
+    chunks = list(pm.iter_pieces())
+    hashes = list(pm.iter_hashes())
 
     try:
       assert len(chunks) == int(ceil(1.*pair[0]/pair[1]))
@@ -60,7 +47,7 @@ def test_single():
       for hash in hashes:
         assert len(hash) == 20
     finally:
-      fs.destroy()
+      pm.destroy()
 
 
 def test_many():
@@ -90,18 +77,19 @@ def test_many():
     for k in range(6):
       fp.write(deadbeef)
 
-  fs1 = FileManager(FileSet([('one.txt', 4), ('two.txt', 8), ('three.txt', 12)], piece_size=13),
-                    chroot=d1)
-  fs2 = FileManager(FileSet([('two.txt', 8), ('four.txt', 16)], piece_size=13), chroot=d2)
-  fs3 = FileManager(FileSet([('six.txt', 24)], piece_size=13), chroot=d3)
+  pm1 = PieceManager(
+      FileSet([('one.txt', 4), ('two.txt', 8), ('three.txt', 12)], piece_size=13),
+      chroot=d1)
+  pm2 = PieceManager(FileSet([('two.txt', 8), ('four.txt', 16)], piece_size=13), chroot=d2)
+  pm3 = PieceManager(FileSet([('six.txt', 24)], piece_size=13), chroot=d3)
 
   try:
-    assert list(fs1.iter_pieces()) == list(fs2.iter_pieces())
-    assert list(fs1.iter_pieces()) == list(fs3.iter_pieces())
-    assert list(fs1.iter_hashes()) == list(fs2.iter_hashes())
-    assert list(fs1.iter_hashes()) == list(fs3.iter_hashes())
+    assert list(pm1.iter_pieces()) == list(pm2.iter_pieces())
+    assert list(pm1.iter_pieces()) == list(pm3.iter_pieces())
+    assert list(pm1.iter_hashes()) == list(pm2.iter_hashes())
+    assert list(pm1.iter_hashes()) == list(pm3.iter_hashes())
 
   finally:
-    fs1.destroy()
-    fs2.destroy()
-    fs3.destroy()
+    pm1.destroy()
+    pm2.destroy()
+    pm3.destroy()

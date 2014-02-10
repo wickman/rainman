@@ -4,7 +4,7 @@ import time
 from .bandwidth import Bandwidth
 from .bitfield import Bitfield
 from .fileset import Piece, Request
-from .wire import Wire
+from .peer_driver import PeerDriver
 
 from tornado import gen
 from twitter.common import log
@@ -78,25 +78,18 @@ class ConnectionState(object):
   del updates_keepalive
 
 
-class Peer(Wire):
-  """Peer state
-
-  Requires:
-    session.torrent
-    session.filemanager
-  """
+class Peer(PeerDriver):
+  """Peer."""
 
   class Error(Exception): pass
   class BadMessage(Error): pass
   class PeerInactive(Error): pass
 
-  def __init__(self, address, iostream, torrent, filemanager):
+  def __init__(self, iostream, piece_manager):
     self._id = None
     self._active = True
-    self._address = address
-    self._filemanager = filemanager
-    self._hash = hashlib.sha1(torrent.info.raw()).digest()
-    self._bitfield = Bitfield(torrent.info.num_pieces)  # remote bitfield
+    self._piece_manager = piece_manager
+    self._bitfield = Bitfield(piece_manager.num_pieces)  # remote bitfield
     self._in = ConnectionState()
     self._out = ConnectionState()
     self._iostream = iostream
@@ -134,10 +127,6 @@ class Peer(Wire):
     return self._id
 
   @property
-  def address(self):
-    return self._address
-
-  @property
   def is_choked(self):
     return self._out.choked
 
@@ -167,7 +156,7 @@ class Peer(Wire):
   # -- runner
   @gen.engine
   def run(self):
-    yield self.send_bitfield()
+    yield self.send_bitfield(self._piece_manager.bitfield)
     while self._active:
       yield self.recv()
 
@@ -210,12 +199,12 @@ class Peer(Wire):
     # In case the piece is actually an unpopulated request, populate.
     if isinstance(piece, Request):
       piece = Piece(piece.index, piece.offset, piece.length,
-                    (yield gen.Task(self._filemanager.read, piece)))
+                    (yield gen.Task(self._piece_manager.read, piece)))
 
     yield super(Peer, self).send_piece(piece)
     self._out.sent(piece.length)
 
-  # --- Wire impls
+  # --- PeerDriver impls
   @gen.coroutine
   def keepalive(self):
     self._in.ping()
@@ -265,9 +254,9 @@ class Peer(Wire):
   @gen.coroutine
   def request(self, request):
     log.debug('Peer [%s] requested %s' % (self._id, request))
-    if self._filemanager.covers(request):
+    if self._piece_manager.covers(request):
       log.debug('   => we have %s, initiating send.' % request)
-      # XXX add to queue, allow scheduler to determine when to initiate
+      # TODO(wickman) instead add to queue, allow scheduler to determine when to initiate
       yield self.send_piece(request)
     else:
       log.debug('   => do not have %s, ignoring.' % request)
@@ -281,7 +270,7 @@ class Peer(Wire):
   def piece(self, piece):
     log.debug('Received %s from [%s]' % (piece, self._id))
     self._in.sent(piece.length)
-    yield gen.Task(self._filemanager.write, piece)
+    yield gen.Task(self._piece_manager.write, piece)
     self._invoke_piece_receipt(piece)
 
   def disconnect(self):

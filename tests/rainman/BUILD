@@ -5,11 +5,12 @@ python_test_suite(name = 'all',
     pants(':test_codec'),
     pants(':test_fileset'),
     pants(':test_iopool'),
+    pants(':test_peer_broker'),
+    pants(':test_peer_driver'),
     pants(':test_piece_broker'),
     pants(':test_piece_manager'),
     pants(':test_sliceset'),
     pants(':test_tdm'),
-    pants(':test_wire')
   ]
 )
 
@@ -38,6 +39,16 @@ python_tests(name = 'test_iopool',
   dependencies = [pants('src/rainman')]
 )
 
+python_tests(name = 'test_peer_broker',
+  sources = ['test_peer_broker.py'],
+  dependencies = [pants('src/rainman')]
+)
+
+python_tests(name = 'test_peer_driver',
+  sources = ['test_peer_driver.py'],
+  dependencies = [pants('src/rainman')]
+)
+
 python_tests(name = 'test_piece_broker',
   sources = ['test_piece_broker.py'],
   dependencies = [
@@ -58,10 +69,5 @@ python_tests(name = 'test_sliceset',
 
 python_tests(name = 'test_tdm',
   sources = ['test_tdm.py'],
-  dependencies = [pants('src/rainman')]
-)
-
-python_tests(name = 'test_wire',
-  sources = ['test_wire.py'],
   dependencies = [pants('src/rainman')]
 )

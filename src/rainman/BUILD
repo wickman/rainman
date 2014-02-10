@@ -5,6 +5,7 @@ python_library(
   sources = globs('*.py'),
   dependencies = [
     python_requirement('twitter.common.collections'),
+    python_requirement('twitter.common.contextutil'),
     python_requirement('twitter.common.dirutil'),
     python_requirement('twitter.common.lang'),
     python_requirement('twitter.common.log'),

@@ -38,6 +38,10 @@ class Torrent(object):
   def info(self):
     return self._info
 
+  @property
+  def hash(self):
+    return hashlib.sha1(self.info.raw()).digest()
+
   @info.setter
   def info(self, value):
     if isinstance(value, dict):
@@ -78,6 +82,8 @@ class MetaInfoFile(object):
 
 # TODO(wickman)  Call the appropriate parts of Fileset here instead of
 # cargo-culting iter_chunks.
+#
+# TODO(wickman) Ugh this shit is garbage.
 class MetaInfoBuilder(object):
   """
     Helper class for constructing MetaInfo objects.
@@ -101,7 +107,8 @@ class MetaInfoBuilder(object):
     self._files = OrderedSet()
     self._stats = {}
 
-  def add(self, filename):
+  def add(self, filename, as_filename=None):
+    as_filename = as_filename or filename
     try:
       stat = os.stat(filename)
     except OSError as e:
@@ -109,7 +116,7 @@ class MetaInfoBuilder(object):
         raise self.FileNotFound("Could not find %s" % filename)
       raise
     self._files.add(filename)
-    self._stats[filename] = stat.st_size
+    self._stats[filename] = (stat.st_size, as_filename)
 
   def remove(self, filename):
     self._files.discard(filename)
@@ -127,7 +134,7 @@ class MetaInfoBuilder(object):
   def build(self):
     if len(self._files) == 0:
       raise self.EmptyInfo("No files in metainfo!")
-    total_size = sum(self._stats.values())
+    total_size = sum(value[0] for value in self._stats.values())
     piece_size = self.choose_size(total_size)
     d = {
       'pieces': ''.join(hashlib.sha1(chunk).digest() for chunk in self.iter_chunks(piece_size)),
@@ -136,12 +143,13 @@ class MetaInfoBuilder(object):
     if self._name:
       d['name'] = self._name
     if len(self._files) == 1:
-      d.update(length=sum(self._stats[fn] for fn in self._files),
-               name=os.path.basename(iter(self._files).next()))
+      d.update(length=sum(self._stats[fn][0] for fn in self._files),
+               name=os.path.basename(self._stats[iter(self._files).next()][1]))  # waa?
     else:
       def encode_filename(filename):
         return [sp.encode(self.ENCODING) for sp in filename.split(os.path.sep)]
-      d['files'] = [{'length': self._stats[fn], 'path': encode_filename(fn)} for fn in self._files]
+      d['files'] = [{'length': self._stats[fn][0], 'path': encode_filename(self._stats[fn][1])}
+                    for fn in self._files]
     return MetaInfo(d)
 
   def iter_chunks(self, chunksize):

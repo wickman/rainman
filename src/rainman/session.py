@@ -1,12 +1,12 @@
 import tempfile
 
 from .bitfield import Bitfield
-from .filemanager import FileManager
 from .piece_set import PieceSet
 from .peer import Peer
 from .peer_id import PeerId
 from .peer_listener import PeerListener
 from .peer_set import PeerSet
+from .piece_manager import PieceManager
 from .scheduler import Scheduler
 
 from tornado import gen
@@ -31,7 +31,7 @@ class Session(object):
     self._io_loop = io_loop or tornado.ioloop.IOLoop()  # singleton by default instead?
     self._logging_timer = None
     self._chroot = chroot or tempfile.mkdtemp()
-    self._filemanager = FileManager.from_torrent(
+    self._filemanager = PieceManager.from_torrent(
         self._torrent, chroot=self._chroot, io_loop=self._io_loop)
     self._bitfield = Bitfield(torrent.info.num_pieces)  # this should be on the PieceManager
     for k in range(torrent.info.num_pieces):
@@ -109,7 +109,7 @@ class Session(object):
       log.debug('  - already seen peer, skipping.')
       iostream.close()
       return
-    new_peer = Peer(address, iostream, self._torrent, self._filemanager)
+    new_peer = Peer(iostream, self._filemanager)
     yield new_peer.send_handshake(self.peer_id)
     self._connections[address] = new_peer
     self._scheduler.add_peer(new_peer)

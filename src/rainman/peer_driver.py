@@ -151,7 +151,7 @@ def decode_piece(channel, command, body):
   return channel.piece(piece)
 
 
-class Wire(Interface):
+class PeerDriver(Interface):
   class CodingError(Exception): pass
 
   ENCODERS = {
@@ -186,7 +186,7 @@ class Wire(Interface):
 
   @classmethod
   def _dispatch(cls, interface, command, body):
-    """Decode a command and dispatch a call to the :class:`WireInterface` interface."""
+    """Decode a command and dispatch a call to the :class:`PeerDriver` interface."""
     return cls.DECODERS[command](interface, command, body)
 
   # ---- Iostream interface

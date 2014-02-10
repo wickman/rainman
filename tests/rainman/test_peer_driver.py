@@ -1,9 +1,10 @@
 from rainman.bitfield import Bitfield
 from rainman.fileset import Piece, Request
-from rainman.wire import Command, Wire
+from rainman.peer_driver import Command, PeerDriver
 
 from tornado import gen
 from tornado.testing import AsyncTestCase, gen_test
+
 
 """
 from twitter.common import log
@@ -34,9 +35,9 @@ class TestIOStream(object):
 
 
 # TODO(wickman) Just use mock?
-class MockWire(Wire):
+class MockPeer(PeerDriver):
   def __init__(self, *args, **kw):
-    super(MockWire, self).__init__(*args, **kw)
+    super(MockPeer, self).__init__(*args, **kw)
     self._iostream = TestIOStream()
     self.keepalives = 0
     self.chokes = 0
@@ -51,49 +52,49 @@ class MockWire(Wire):
   def iostream(self):
     return self._iostream
 
-  @gen.coroutine    
+  @gen.coroutine
   def keepalive(self):
     self.keepalives += 1
 
-  @gen.coroutine    
+  @gen.coroutine
   def choke(self):
     self.chokes += 1
 
-  @gen.coroutine    
+  @gen.coroutine
   def unchoke(self):
     self.chokes -= 1
 
-  @gen.coroutine    
+  @gen.coroutine
   def interested(self):
     self.interests += 1
 
-  @gen.coroutine    
+  @gen.coroutine
   def not_interested(self):
     self.interests -= 1
 
-  @gen.coroutine    
+  @gen.coroutine
   def have(self, index):
     self.haves.append(index)
 
-  @gen.coroutine    
+  @gen.coroutine
   def bitfield(self, bitfield):
     self.bitfields.append(bitfield)
 
-  @gen.coroutine    
+  @gen.coroutine
   def request(self, piece):
     self.requests.append(piece)
 
-  @gen.coroutine    
+  @gen.coroutine
   def cancel(self, piece):
     self.cancels.append(piece)
 
-  @gen.coroutine    
+  @gen.coroutine
   def piece(self, piece):
     self.pieces.append(piece)
 
 
 def test_basic_commands():
-  wire = MockWire()
+  wire = MockPeer()
 
   wire.send_choke()
   wire.recv()
@@ -127,10 +128,10 @@ def test_basic_commands():
   assert wire.interests == 1
 
 
-class WireTest(AsyncTestCase):
+class DriverTest(AsyncTestCase):
   @gen_test
   def test_argument_commands(self):
-    wire = MockWire()
+    wire = MockPeer()
 
     # have
     yield wire.send_have(23)

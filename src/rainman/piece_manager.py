@@ -67,7 +67,6 @@ class PieceManager(object):
   def __contains__(self, block):
     return self.covers(block)
 
-  #  --- piece initialization
   @property
   def slices(self):
     return self._sliceset
@@ -75,6 +74,10 @@ class PieceManager(object):
   @property
   def total_size(self):
     return sum((fp[1] for fp in self._fileset), 0)
+
+  @property
+  def num_pieces(self):
+    return self._fileset.num_pieces
 
   @property
   def assembled_size(self):
@@ -210,7 +213,6 @@ class PieceBroker(PieceManager):
     return self._bitfield
 
   # ---- io_loop interface
-
   @gen.engine
   def read(self, request, callback):
     """Read a :class:`Request` asynchronously.

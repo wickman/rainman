@@ -1,5 +1,4 @@
 import array
-import random
 
 
 class Bitfield(object):

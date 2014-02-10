@@ -1,11 +1,10 @@
 import hashlib
-import struct
 import time
 
 from .bandwidth import Bandwidth
 from .bitfield import Bitfield
 from .fileset import Piece, Request
-from .metainfo import MetaInfo
+from .wire import Wire
 
 from tornado import gen
 from twitter.common import log
@@ -23,7 +22,7 @@ class ConnectionState(object):
     self._choked = True
     self._queue = []
     self._sent = 0
-    self._bandwidth = Bandwidth(window=ConnectionState.BW_COLLECTION_INTERVAL)
+    self._bandwidth = Bandwidth(window=self.BW_COLLECTION_INTERVAL)
 
   def updates_keepalive(fn):
     def wrapper(self, *args, **kw):
@@ -113,10 +112,6 @@ class Peer(Wire):
 
   def __str__(self):
     return 'Peer(%s)' % self._id
-
-  @property
-  def bitfield(self):
-    return self._bitfield
 
   @property
   def egress_bytes(self):
@@ -213,11 +208,11 @@ class Peer(Wire):
       return
 
     # In case the piece is actually an unpopulated request, populate.
-    if isinstance(piece, request):
-      piece = Piece(request.index, request.offset, request.length,
-                    (yield gen.Task(self._filemanager.read, request)))
+    if isinstance(piece, Request):
+      piece = Piece(piece.index, piece.offset, piece.length,
+                    (yield gen.Task(self._filemanager.read, piece)))
 
-    yield gen.Task(self._iostream.write, Command.wire(Command.PIECE, piece))
+    yield super(Peer, self).send_piece(piece)
     self._out.sent(piece.length)
 
   # --- Wire impls
@@ -279,8 +274,6 @@ class Peer(Wire):
 
   @gen.coroutine
   def cancel(self, request):
-    index, begin, length = struct.unpack('>III', message_body)
-    request = Request(index, begin, length)
     log.debug('Peer [%s] canceling %s' % (self._id, request))
     self._in.cancel_request(request)
 

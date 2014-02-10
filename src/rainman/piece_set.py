@@ -1,6 +1,8 @@
+import array
+
+
 class PieceSet(object):
   """A collection for pieces that provides metrics such as rarest piece."""
-
   RARE_THRESHOLD = 50
 
   def __init__(self, length):
@@ -24,7 +26,7 @@ class PieceSet(object):
 
   # TODO(wickman) Fix this if it proves to be too slow.
   def rarest(self, count=None, owned=None):
-    if not self._rarest or self._changed_pieces >= PieceSet.RARE_THRESHOLD:
+    if not self._rarest or self._changed_pieces >= self.tRARE_THRESHOLD:
       def exists_but_not_owned(pair):
         index, count = pair
         return count > 0 and (not owned or not owned[index])

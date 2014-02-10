@@ -2,8 +2,6 @@ import datetime
 import random
 import time
 
-from .fileset import Piece
-
 from tornado import gen
 from twitter.common import log
 from twitter.common.quantity import Amount, Data, Time
@@ -17,7 +15,7 @@ class TimeDecayMap(object):
   def __init__(self, window=DEFAULT_WINDOW, clock=time):
     self._window = window.as_(Time.SECONDS)
     self._clock = clock
-    self._slices = {} # slice => list(peer)
+    self._slices = {}  # slice => list(peer)
     self._outstanding = 0
 
   @property
@@ -91,7 +89,7 @@ class Scheduler(object):
     start as the current optimistic unchoke as anywhere else in the rotation.
 
     Uses:
-      session.pieces
+      session.pieces        (TODO: pull this into scheduler and use callbacks)
       session.filemanager
       session.io_loop
       session.owners
@@ -116,7 +114,7 @@ class Scheduler(object):
   def schedule(self):
     while self._active:
       session_bitfield = self._session.bitfield  # filemanager.bitfield
-      rarest = [piece for piece in self._session.pieces.rarest() if not session_bitfield[index]]
+      rarest = [index for index in self._session.pieces.rarest() if not session_bitfield[index]]
       rarest = rarest[:self.CONSIDERED_PIECES]
       random.shuffle(rarest)
 
@@ -131,9 +129,9 @@ class Scheduler(object):
         # we have not told we are interested
         if len([peer for peer in owners if not peer.choked or not peer.interested]) == 0:
           continue
-        if self._requests.outstanding > Scheduler.MAX_REQUESTS:
+        if self._requests.outstanding > self.MAX_REQUESTS:
           log.debug('Hit max requests, waiting.')
-          yield gen.Task(self._session.io_loop.add_timeout, Scheduler.INNER_YIELD)
+          yield gen.Task(self._session.io_loop.add_timeout, self.INNER_YIELD)
 
         # subpiece nomenclature is "block"
         request_size = self.REQUEST_SIZE.as_(Data.BYTES)
@@ -151,8 +149,7 @@ class Scheduler(object):
             random_peer.send_request(block)
             self._requests.add(block, random_peer)
 
-      now = time.time()
-      yield gen.Task(self._session.io_loop.add_timeout, Scheduler.OUTER_YIELD)
+      yield gen.Task(self._session.io_loop.add_timeout, self.OUTER_YIELD)
 
   def received(self, piece, from_peer):
     if piece not in self._requests:

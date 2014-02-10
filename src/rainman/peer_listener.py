@@ -1,3 +1,9 @@
+import errno
+
+from tornado.tcpserver import TCPServer
+from twitter.common import log
+
+
 class PeerListener(TCPServer):
   class BindError(Exception): pass
 
@@ -6,7 +12,7 @@ class PeerListener(TCPServer):
   def __init__(self, handler, io_loop=None, port=None):
     self._handler = handler
     super(PeerListener, self).__init__(io_loop=io_loop)
-    port_range = [port] if port else PeerListener.PORT_RANGE
+    port_range = [port] if port else self.PORT_RANGE
     for port in port_range:
       try:
         log.debug('Peer listener attempting to bind @ %s' % port)

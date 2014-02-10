@@ -2,6 +2,7 @@ import hashlib
 import os
 import tempfile
 
+from .bitfield import Bitfield
 from .fileset import (
     FileSet,
     fileslice,
@@ -177,7 +178,7 @@ class PieceManager(object):
       yield Request(
           index,
           start_offset,
-          block_size if start_offset + block_size <= piece_size else piece_size % request_size)
+          block_size if start_offset + block_size <= piece_size else piece_size % block_size)
 
   def iter_pieces(self):
     """iterate over the pieces backed by this fileset.  blocking."""
@@ -210,7 +211,7 @@ class PieceBroker(PieceManager):
   """Translates FileSet read/write operations to IOLoop operations via a ThreadPool."""
 
   def __init__(self, fileset, piece_hashes=None, chroot=None, io_loop=None):
-    super(PieceManager, self).__init__(fileset, piece_hashes, chroot)
+    super(PieceBroker, self).__init__(fileset, piece_hashes, chroot)
     self._bitfield = Bitfield(len(self._pieces))
     for index, (piece, actual_piece) in enumerate(zip(self._pieces, self._actual_pieces)):
       self._bitfield[index] = piece == actual_piece

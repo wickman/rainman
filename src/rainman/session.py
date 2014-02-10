@@ -1,39 +1,31 @@
-import array
-import datetime
-import errno
-import functools
-import hashlib
-import random
-import socket
-import struct
 import tempfile
-import urllib
 
 from .bitfield import Bitfield
-from .codec import BDecoder
 from .filemanager import FileManager
+from .piece_set import PieceSet
 from .peer import Peer
+from .peer_id import PeerId
+from .peer_listener import PeerListener
+from .peer_set import PeerSet
 from .scheduler import Scheduler
 
+from tornado import gen
 import tornado.ioloop
-from tornado import httpclient
-from tornado.netutil import TCPServer
-from tornado.iostream import IOStream
 from twitter.common import log
 from twitter.common.quantity import Amount, Time
 
 
 class Session(object):
-  PEER_RETRY_INTERVAL  = Amount(10, Time.SECONDS)
+  PEER_RETRY_INTERVAL = Amount(10, Time.SECONDS)
   MAINTENANCE_INTERVAL = Amount(200, Time.MILLISECONDS)
-  LOGGING_INTERVAL     = Amount(1, Time.SECONDS)
+  LOGGING_INTERVAL = Amount(1, Time.SECONDS)
 
   def __init__(self, torrent, chroot=None, port=None, io_loop=None):
     self._torrent = torrent
     self._port = port
-    self._peers = None     # PeerSet: candidate peers
+    self._peers = None  # PeerSet: candidate peers
     self._listener = None  # PeerListener
-    self._connections = {} # address => Peer
+    self._connections = {}  # address => Peer
     self._dead = []
     self._peer_id = None
     self._io_loop = io_loop or tornado.ioloop.IOLoop()  # singleton by default instead?
@@ -48,7 +40,6 @@ class Session(object):
     self._scheduler = Scheduler(self)
 
   # ---- properties
-
   @property
   def scheduler(self):
     return self._scheduler
@@ -63,6 +54,7 @@ class Session(object):
 
   @property
   def peer_id(self):
+    # XXX
     if self._peer_id is None:
       self._peer_id = PeerId.generate()
       log.info('Started session %s' % self._peer_id)
@@ -164,7 +156,7 @@ class Session(object):
     ping_peers_if_necessary()
 
     self._io_loop.add_timeout(
-        Session.MAINTENANCE_INTERVAL.as_(Time.MILLISECONDS),
+        self.MAINTENANCE_INTERVAL.as_(Time.MILLISECONDS),
         self.maintenance)
 
   def periodic_logging(self):
@@ -179,7 +171,7 @@ class Session(object):
     self._peers = PeerSet(self)
     self._io_loop.add_callback(self.maintenance)
     self._logging_timer = tornado.ioloop.PeriodicCallback(self.periodic_logging,
-        Session.LOGGING_INTERVAL.as_(Time.MILLISECONDS), self._io_loop)
+        self.LOGGING_INTERVAL.as_(Time.MILLISECONDS), self._io_loop)
     self._logging_timer.start()
     self._scheduler.schedule()
     self._io_loop.start()

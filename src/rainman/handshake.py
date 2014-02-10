@@ -1,6 +1,13 @@
+import hashlib
+import struct
+
+from .metainfo import MetaInfo
+
+
 class PeerHandshake(object):
   class InvalidHandshake(Exception): pass
 
+  PREFIX_LENGTH = 48
   LENGTH = 68
   PROTOCOL_STR = b'BitTorrent protocol'
   EXTENSION_BITS = {
@@ -9,13 +16,13 @@ class PeerHandshake(object):
     64: 'DHT',
   }
 
-  SPANS = [
-    slice( 0,  1),  # First byte = 19
-    slice( 1, 20),  # "BitTorrent protocol"
+  SPANS = (
+    slice(0, 1),  # First byte = 19
+    slice(1, 20),  # "BitTorrent protocol"
     slice(20, 28),  # Reserved bits
     slice(28, 48),  # Metainfo hash
-    slice(48, 68)   # Peer id
-  ]
+    slice(48, 68),   # Peer id
+  )
 
   @classmethod
   def make(cls, info, peer_id=None):

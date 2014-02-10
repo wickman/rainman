@@ -88,8 +88,9 @@ class MetaInfoBuilder(object):
     metainfo = builder.build()
   """
 
-  class FileNotFound(Exception): pass
-  class EmptyInfo(Exception): pass
+  class Error(Exception): pass
+  class FileNotFound(Error): pass
+  class EmptyInfo(Error): pass
 
   MIN_CHUNK_SIZE = Amount(64, Data.KB)
   MAX_CHUNK_SIZE = Amount(1, Data.MB)
@@ -105,7 +106,7 @@ class MetaInfoBuilder(object):
       stat = os.stat(filename)
     except OSError as e:
       if e.errno == errno.ENOENT:
-        raise MetaInfoBuilder.FileNotFound("Could not find %s" % filename)
+        raise self.FileNotFound("Could not find %s" % filename)
       raise
     self._files.add(filename)
     self._stats[filename] = stat.st_size
@@ -114,34 +115,33 @@ class MetaInfoBuilder(object):
     self._files.discard(filename)
     self._stats.pop(filename)
 
-  @staticmethod
-  def choose_size(total_size):
-    chunksize = 2**int(round(math.log(1. * total_size / MetaInfoBuilder.DEFAULT_CHUNKS, 2)))
-    if chunksize < MetaInfoBuilder.MIN_CHUNK_SIZE.as_(Data.BYTES):
-      return int(MetaInfoBuilder.MIN_CHUNK_SIZE.as_(Data.BYTES))
-    elif chunksize > MetaInfoBuilder.MAX_CHUNK_SIZE.as_(Data.BYTES):
-      return int(MetaInfoBuilder.MAX_CHUNK_SIZE.as_(Data.BYTES))
+  @classmethod
+  def choose_size(cls, total_size):
+    chunksize = 2 ** int(round(math.log(1. * total_size / cls.DEFAULT_CHUNKS, 2)))
+    if chunksize < cls.MIN_CHUNK_SIZE.as_(Data.BYTES):
+      return int(cls.MIN_CHUNK_SIZE.as_(Data.BYTES))
+    elif chunksize > cls.MAX_CHUNK_SIZE.as_(Data.BYTES):
+      return int(cls.MAX_CHUNK_SIZE.as_(Data.BYTES))
     return chunksize
 
   def build(self):
     if len(self._files) == 0:
-      raise MetaInfoBuilder.EmptyInfo("No files in metainfo!")
+      raise self.EmptyInfo("No files in metainfo!")
     total_size = sum(self._stats.values())
-    piece_size = MetaInfoBuilder.choose_size(total_size)
+    piece_size = self.choose_size(total_size)
     d = {
       'pieces': ''.join(hashlib.sha1(chunk).digest() for chunk in self.iter_chunks(piece_size)),
       'piece length': piece_size
     }
     if self._name:
-      d.update(name = self._name)
+      d['name'] = self._name
     if len(self._files) == 1:
-      d.update(length = sum(self._stats[fn] for fn in self._files),
-               name = os.path.basename(iter(self._files).next()))
+      d.update(length=sum(self._stats[fn] for fn in self._files),
+               name=os.path.basename(iter(self._files).next()))
     else:
-      d.update(files = [
-        {'length': self._stats[fn],
-         'path': [sp.encode(MetaInfo.ENCODING) for sp in fn.split(os.path.sep)]}
-        for fn in self._files])
+      def encode_filename(filename):
+        return [sp.encode(self.ENCODING) for sp in filename.split(os.path.sep)]
+      d['files'] = [{'length': self._stats[fn], 'path': encode_filename(fn)} for fn in self._files]
     return MetaInfo(d)
 
   def iter_chunks(self, chunksize):
@@ -196,7 +196,7 @@ class MetaInfo(object):
   def pieces(self):
     pieces = self._info.get('pieces')
     for k in range(0, len(pieces), 20):
-      yield pieces[k : k+20]
+      yield pieces[k:k + 20]
 
   @property
   def num_pieces(self):

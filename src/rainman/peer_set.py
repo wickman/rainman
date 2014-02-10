@@ -1,3 +1,16 @@
+import datetime
+import hashlib
+import socket
+import struct
+import urllib  # XXX PY3
+
+from .codec import BDecoder
+
+import tornado
+from tornado import httpclient
+from twitter.common import log
+
+
 class PeerSet(object):
   """A set of Peers for whom connections may be established.
 
@@ -23,8 +36,8 @@ class PeerSet(object):
     self._tracker = session.torrent.announce
     self._io_loop = io_loop or session.io_loop or tornado.ioloop.IOLoop.instance()
     self._http_client = httpclient.AsyncHTTPClient(io_loop=self._io_loop)
-    self._peerset = set() # This breaks my golden rule of abstraction.
-    self._peermap = {}    #
+    self._peerset = set()  # This breaks my golden rule of abstraction.
+    self._peermap = {}
     self._io_loop.add_callback(self.start)
     self._handle = None
 
@@ -67,8 +80,8 @@ class PeerSet(object):
           yield (peer['ip'], peer['port'])
       elif isinstance(peers, str):
         for offset in range(0, len(peers), 6):
-          ip = peers[offset:offset+4]
-          port = peers[offset+4:offset+6]
+          ip = peers[offset:offset + 4]
+          port = peers[offset + 4:offset + 6]
           yield ('%d.%d.%d.%d' % struct.unpack('>BBBB', ip), struct.unpack('>H', port)[0])
     me = (socket.gethostbyname(socket.gethostname()), self._session.port)
     return (pair for pair in iterate() if pair != me)

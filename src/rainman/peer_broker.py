@@ -1,13 +1,19 @@
-# TODO(wickman) Flesh this out
-import hashlib
+import errno
+import socket
+
+from .handshake import PeerHandshake
+from .session import Session
 
 from tornado import gen
+from tornado.iostream import IOStream
 from tornado.netutil import TCPServer
 from twitter.common import log
+from twitter.common.quantity import Amount, Time
 
 
 class PeerBroker(TCPServer):
-  class BindError(Exception): pass
+  class Error(Exception): pass
+  class BindError(Error): pass
 
   PORT_RANGE = range(6881, 6890)
   FILTER_INTERVAL = Amount(1, Time.MINUTES)
@@ -16,7 +22,7 @@ class PeerBroker(TCPServer):
     self._torrents = {}  # map from handshake prefix => torrent
     self._sessions = {}  # map from handshake prefix => session
     super(PeerBroker, self).__init__(io_loop=io_loop)
-    port_range = [port] if port else PeerBroker.PORT_RANGE
+    port_range = [port] if port else self.PORT_RANGE
     for port in port_range:
       try:
         log.debug('Peer listener attempting to bind @ %s' % port)
@@ -26,7 +32,7 @@ class PeerBroker(TCPServer):
         if e.errno == errno.EADDRINUSE:
           continue
     else:
-      raise PeerBroker.BindError('Could not bind to any port in range %s' % repr(port_range))
+      raise self.BindError('Could not bind to any port in range %s' % repr(port_range))
     log.debug('Bound at port %s' % port)
     self._port = port
 
@@ -90,7 +96,7 @@ class PeerBroker(TCPServer):
 
   @gen.engine
   def handle_stream(self, iostream, address):
-    handshake_prefix = yield gen.Task(iostream.read_bytes, PeerHandshaker.PREFIX_LENGTH)
+    handshake_prefix = yield gen.Task(iostream.read_bytes, PeerHandshake.PREFIX_LENGTH)
     session = self._sessions.get(handshake_prefix)
     if not session:
       session_provider = self._torrents.get(handshake_prefix)

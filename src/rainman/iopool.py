@@ -52,7 +52,7 @@ class IOPool(object):
     self._workers = [IOPoolWorker(self._in_queue, self._io_loop) for _ in range(workers)]
 
   def add(self, function, *args, **kw):
-    callback = kw.pop('callback', (lambda *a,**k: True))
+    callback = kw.pop('callback', (lambda *a, **k: True))
     callback = stack_context.wrap(callback)
     self._in_queue.put((functools.partial(function, *args, **kw), callback))
 

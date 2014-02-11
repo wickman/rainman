@@ -69,7 +69,8 @@ class TimeDecayMap(object):
 
 
 class Scheduler(object):
-  """
+  """Given a piece broker and set of peers, schedule ingress/egress appropriately.
+
     From BEP-003:
 
     The currently deployed choking algorithm avoids fibrillation by only
@@ -103,9 +104,14 @@ class Scheduler(object):
   OUTER_YIELD = datetime.timedelta(0, 0, Amount(10, Time.MILLISECONDS).as_(Time.MICROSECONDS))
   INNER_YIELD = datetime.timedelta(0, 0, Amount(1, Time.MILLISECONDS).as_(Time.MICROSECONDS))
 
-  def __init__(self, session):
+  # TODO(wickman) Allow external control of:
+  #    target connections
+  #    target ingress
+  #    target egress
+  def __init__(self, session):  # piece_broker, add_peer(...), remove_peer(...)
     self._session = session
     self._requests = TimeDecayMap()
+    self._pieces
     self._schedules = 0
     self._timer = None
     self._active = True
@@ -114,7 +120,7 @@ class Scheduler(object):
   def schedule(self):
     while self._active:
       session_bitfield = self._session.bitfield  # filemanager.bitfield
-      rarest = [index for index in self._session.pieces.rarest() if not session_bitfield[index]]
+      rarest = [index for index in self._session.pieces.rarest() if not session_bitfield[index]]  # this should own pieces
       rarest = rarest[:self.CONSIDERED_PIECES]
       random.shuffle(rarest)
 
@@ -135,8 +141,8 @@ class Scheduler(object):
 
         # subpiece nomenclature is "block"
         request_size = self.REQUEST_SIZE.as_(Data.BYTES)
-        for block in self._session.filemanager.iter_blocks(piece_index, request_size):
-          if block not in self._session.filemanager and block not in self._requests:
+        for block in self._session.piece_broker.iter_blocks(piece_index, request_size):
+          if block not in self._session.piece_broker and block not in self._requests:
             random_peer = random.choice(owners)
             if random_peer.choked:
               if not random_peer.interested:

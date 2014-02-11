@@ -10,46 +10,68 @@ python_test_suite(name = 'all',
     pants(':test_piece_broker'),
     pants(':test_piece_manager'),
     pants(':test_sliceset'),
-    pants(':test_tdm'),
+    pants(':test_time_decay_map'),
   ]
 )
 
-python_tests(name = 'test_bandwidth',
+python_tests(
+  name = 'test_bandwidth',
   sources = ['test_bandwidth.py'],
-  dependencies = [pants('src/rainman')]
+  dependencies = [
+    pants('src/rainman'),
+  ],
 )
 
-python_tests(name = 'test_bitfield',
+python_tests(
+  name = 'test_bitfield',
   sources = ['test_bitfield.py'],
-  dependencies = [pants('src/rainman')]
+  dependencies = [
+    pants('src/rainman'),
+  ],
 )
 
-python_tests(name = 'test_codec',
+python_tests(
+  name = 'test_codec',
   sources = ['test_codec.py'],
-  dependencies = [pants('src/rainman')]
+  dependencies = [
+    pants('src/rainman'),
+  ],
 )
 
-python_tests(name = 'test_fileset',
+python_tests(
+  name = 'test_fileset',
   sources = ['test_fileset.py'],
-  dependencies = [pants('src/rainman')]
+  dependencies = [
+    pants('src/rainman'),
+  ],
 )
 
-python_tests(name = 'test_iopool',
+python_tests(
+  name = 'test_iopool',
   sources = ['test_iopool.py'],
-  dependencies = [pants('src/rainman')]
+  dependencies = [
+    pants('src/rainman'),
+  ],
 )
 
-python_tests(name = 'test_peer_broker',
+python_tests(
+  name = 'test_peer_broker',
   sources = ['test_peer_broker.py'],
-  dependencies = [pants('src/rainman')]
+  dependencies = [
+    pants('src/rainman'),
+  ],
 )
 
-python_tests(name = 'test_peer_driver',
+python_tests(
+  name = 'test_peer_driver',
   sources = ['test_peer_driver.py'],
-  dependencies = [pants('src/rainman')]
+  dependencies = [
+    pants('src/rainman'),
+  ],
 )
 
-python_tests(name = 'test_piece_broker',
+python_tests(
+  name = 'test_piece_broker',
   sources = ['test_piece_broker.py'],
   dependencies = [
     python_requirement('twitter.common.contextutil'),
@@ -57,17 +79,26 @@ python_tests(name = 'test_piece_broker',
   ]
 )
 
-python_tests(name = 'test_piece_manager',
+python_tests(
+  name = 'test_piece_manager',
   sources = ['test_piece_manager.py'],
-  dependencies = [pants('src/rainman')]
+  dependencies = [
+    pants('src/rainman'),
+  ],
 )
 
-python_tests(name = 'test_sliceset',
+python_tests(
+  name = 'test_sliceset',
   sources = ['test_sliceset.py'],
-  dependencies = [pants('src/rainman')]
+  dependencies = [
+    pants('src/rainman'),
+  ],
 )
 
-python_tests(name = 'test_tdm',
-  sources = ['test_tdm.py'],
-  dependencies = [pants('src/rainman')]
+python_tests(
+  name = 'test_time_decay_map',
+  sources = ['test_time_decay_map.py'],
+  dependencies = [
+    pants('src/rainman'),
+  ],
 )

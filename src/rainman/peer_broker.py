@@ -1,3 +1,4 @@
+from collections import namedtuple
 import errno
 import socket
 
@@ -11,6 +12,9 @@ from twitter.common import log
 from twitter.common.quantity import Amount, Time
 
 
+TorrentInfo = namedtuple('TorrentInfo', 'torrent session session_provider')
+
+
 class PeerBroker(TCPServer):
   class Error(Exception): pass
   class BindError(Error): pass
@@ -18,9 +22,10 @@ class PeerBroker(TCPServer):
   PORT_RANGE = range(6881, 6890)
   FILTER_INTERVAL = Amount(1, Time.MINUTES)
 
-  def __init__(self, io_loop=None, port=None):
-    self._torrents = {}  # map from handshake prefix => torrent
-    self._sessions = {}  # map from handshake prefix => session
+  def __init__(self, peer_id, io_loop=None, port=None):
+    self.peer_id = peer_id
+    self._ip = socket.gethostbyname(socket.gethostname())
+    self._torrents = {}  # map from handshake prefix => TorrentInfo
     self._failed_handshakes = 0
     super(PeerBroker, self).__init__(io_loop=io_loop)
     self._port = self._do_bind(port)
@@ -43,29 +48,28 @@ class PeerBroker(TCPServer):
   def port(self):
     return self._port
 
-  def register_torrent(self, torrent, session_provider=None):
-    if session_provider is None:
-      def default_session_provider(port):
-        return Session(torrent, port=port, io_loop=self.io_loop)
-      session_provider = default_session_provider
-    self._torrents[PeerHandshake.make(torrent.info)] = session_provider
+  def default_session_provider(torrent):
+    return Session(torrent, io_loop=self.io_loop)
+
+  def register_torrent(self, torrent, session=None, session_provider=None):
+    handshake_prefix = PeerHandshake.make(torrent.info)
+    self._torrents[handshake_prefix] = TorrentInfo(
+        torrent,
+        session,
+        session_provider or self.default_session_provider)
 
   @gen.engine
-  def handshake(self, address, iostream, session, prefix='', callback=None):
+  def handshake(self, iostream, session, prefix='', callback=None):
     """Complete the handshake given a session.
 
        Uses:
          session.torrent
          session.peer_id
-
     """
-    log.debug('Session [%s] starting handshake with %s:%s' % (
-        session.peer_id, address[0], address[1]))
-
-    handshake_full = PeerHandshake.make(session.torrent.info, session.peer_id)
+    write_handshake = PeerHandshake.make(session.torrent.info, self.peer_id)
     read_handshake, _ = yield [
         gen.Task(iostream.read_bytes, PeerHandshake.LENGTH - len(prefix)),
-        gen.Task(iostream.write, handshake_full)]
+        gen.Task(iostream.write, write_handshake)]
     read_handshake = prefix + read_handshake
 
     succeeded = False
@@ -74,44 +78,53 @@ class PeerBroker(TCPServer):
       if handshake.hash == session.torrent.hash:
         succeeded = True
       else:
-        log.debug('Session [%s] got mismatched torrent hashes.' % session.peer_id)
+        log.debug('Mismatched torrent hashes with %s' % handshake.peer_id)
     except PeerHandshake.InvalidHandshake as e:
-      log.debug('Session [%s] got bad handshake with %s:%s: %s' % (session.peer_id,
-        address[0], address[1], e))
+      log.debug('Got bad handshake: %s' % e)
       iostream.close()
 
-    log.debug('Session [%s] finishing handshake with %s:%s' % (session.peer_id,
-        address[0], address[1]))
-
     if callback:
-      callback(succeeded)
+      callback(handshake.peer_id if succeeded else None)
+
+  def establish_session(self, handshake_prefix):
+    torrent, session, session_provider = self._torrents.get(handshake_prefix, (None, None, None))
+    if not torrent:
+      raise self.Error('Cannot initiate a connection for an unknown torrent.')
+    if not session:
+      if not session_provider:
+        raise self.Error('Cannot initiate a connection without a session or session provider.')
+      session = session_provider(torrent)
+      self._torrents[handshake_prefix] = TorrentInfo(torrent, session, session_provider)
+    return torrent, session
 
   @gen.engine
-  def initiate_connection(self, torrent, address):
-    session = self._sessions.get(torrent)
-    if not session:
-      raise ValueError('Torrent not yet registered.')
+  def maybe_add_peer(self, handshake_task, iostream, session, callback=None):
+    peer_id = yield handshake_task
+    if peer_id:
+      session.add_peer(peer_id, iostream)
+    else:
+      self._failed_handshakes += 1
+      iostream.close()
+    callback(peer_id)
+
+  @gen.engine
+  def initiate_connection(self, torrent, address, callback=None):
+    handshake_prefix = PeerHandshake.make(torrent.info)
+    torrent, session = self.establish_session(handshake_prefix)
     iostream = IOStream(socket.socket(socket.AF_INET, socket.SOCK_STREAM), io_loop=self.io_loop)
     yield gen.Task(iostream.connect, address)
-    success = yield gen.Task(self.handshake, iostream, session)
-    if success:
-      session.add_peer(address, iostream)
+    handshake_task = gen.Task(self.handshake, iostream, session)
+    callback((yield gen.Task(self.maybe_add_peer, handshake_task, iostream, session)))
 
   @gen.engine
   def handle_stream(self, iostream, address):
     log.debug('PeerBroker got incoming connection from %s' % (address,))
     handshake_prefix = yield gen.Task(iostream.read_bytes, PeerHandshake.PREFIX_LENGTH)
-    session = self._sessions.get(handshake_prefix)
-    if not session:
-      session_provider = self._torrents.get(handshake_prefix)
-      if not session_provider:
-        self._failed_handshakes += 1
-        iostream.close()
-        return
-      self._sessions[handshake_prefix] = session = session_provider(self.port)
-    success = yield gen.Task(self.handshake, address, iostream, session, prefix=handshake_prefix)
-    if success:
-      session.add_peer(address, iostream)
-    else:
+    try:
+      torrent, session = self.establish_session(handshake_prefix)
+    except self.Error as e:
       self._failed_handshakes += 1
-
+      iostream.close()
+      return
+    handshake_task = gen.Task(self.handshake, iostream, session, prefix=handshake_prefix)
+    yield gen.Task(self.maybe_add_peer, handshake_task, iostream, session)

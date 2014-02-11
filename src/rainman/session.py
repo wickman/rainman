@@ -20,24 +20,14 @@ class Session(object):
   MAINTENANCE_INTERVAL = Amount(200, Time.MILLISECONDS)
   LOGGING_INTERVAL = Amount(1, Time.SECONDS)
 
-  def __init__(self, torrent, chroot=None, port=None, io_loop=None):
-    self._torrent = torrent
-    self._port = port
-    self._peers = None  # PeerSet: candidate peers
-    self._listener = None  # PeerListener
-    self._connections = {}  # address => Peer
+  def __init__(self, piece_broker, io_loop=None):
+    self._connections = {}  # peer_id => Peer
     self._dead = []
-    self._peer_id = None
-    self._io_loop = io_loop or tornado.ioloop.IOLoop()  # singleton by default instead?
+    self._piece_broker = piece_broker
+    self._io_loop = io_loop or tornado.ioloop.IOLoop()
     self._logging_timer = None
-    self._chroot = chroot or tempfile.mkdtemp()
-    self._filemanager = PieceManager.from_torrent(
-        self._torrent, chroot=self._chroot, io_loop=self._io_loop)
-    self._bitfield = Bitfield(torrent.info.num_pieces)  # this should be on the PieceManager
-    for k in range(torrent.info.num_pieces):
-      self._bitfield[k] = self._filemanager.have(k)
-    self._pieces = PieceSet(self._torrent.info.num_pieces)
     self._scheduler = Scheduler(self)
+    self._queued_receipts = []
 
   # ---- properties
   @property
@@ -45,33 +35,16 @@ class Session(object):
     return self._scheduler
 
   @property
-  def port(self):
-    return self._port
+  def piece_broker(self):
+    return self._piece_broker
 
   @property
-  def chroot(self):
-    return self._chroot
-
-  @property
-  def peer_id(self):
-    # XXX
-    if self._peer_id is None:
-      self._peer_id = PeerId.generate()
-      log.info('Started session %s' % self._peer_id)
-    return self._peer_id
-
-  @property
-  def torrent(self):
-    return self._torrent
+  def bitfield(self):
+    return self.piece_broker.bitfield
 
   @property
   def io_loop(self):
     return self._io_loop
-
-  # This is getting ridiculous
-  @property
-  def filemanager(self):
-    return self._filemanager
 
   @property
   def downloaded_bytes(self):
@@ -87,53 +60,38 @@ class Session(object):
   def assembled_bytes(self):
     return self._filemanager.assembled_size
 
-  @property
-  def pieces(self):
-    return self._pieces
-
-  def has(self, index):
-    return self._bitfield[index]
-
-  @property
-  def bitfield(self):
-    return self._bitfield
-
-  def owners(self, index):
-    return [peer for peer in filter(None, self._connections.values()) if peer.bitfield[index]]
-
   # ----- mutations
-  @gen.coroutine
-  def add_peer(self, address, iostream):
-    log.info('Adding peer: %s' % address)
-    if address in self._connections:
-      log.debug('  - already seen peer, skipping.')
+  def add_peer(self, peer_id, iostream):
+    log.info('Adding peer: %s' % peer_id)
+    if peer_id in self._connections:
+      log.debug('  - already seen peer %s, skipping.' % peer_id)
       iostream.close()
       return
-    new_peer = Peer(iostream, self._filemanager)
-    yield new_peer.send_handshake(self.peer_id)
-    self._connections[address] = new_peer
-    self._scheduler.add_peer(new_peer)
-    self.io_loop.add_callback(new_peer.run)
+    # add the peer but let the activation be controlled externally
+    self._connections[peer_id] = new_peer = Peer(peer_id, iostream, self._piece_broker)
+    new_peer.register_piece_receipt(self._queued_receipts.append)
 
+  @gen.engine
   def maintenance(self):
     def add_new_connections():
       # XXX need to cap the number of connections.  push peer set logic into client, and have it
       # decide which peers to add.
-      for address in self._peers:
-        if address not in self._connections:
-          self.add_peer(address)
+      for peer_id, peer in self._connections.items():
+        if not peer.active:
+          peer.activate()
+          self.io_loop.add_callback(peer.start)
 
     def filter_dead_connections():
       dead = set()
-      for address, peer in self._connections.items():
-        if peer and (peer._iostream.closed() or not peer.healthy):
-          log.debug('Garbage collecting peer [%s]' % peer.id)
-          dead.add(address)
-      for address in dead:
-        log.debug('Popping self._connections[%s] in filter_dead_connections' % repr(address))
-        peer = self._connections.pop(address)
+      for peer_id, peer in self._peers.items():
+        if peer and (peer.iostream.closed() or not peer.healthy):
+          log.debug('Garbage collecting peer [%s]' % peer_id)
+          dead.add(peer_id)
+      for peer_id in dead:
+        log.debug('Popping peer %s in filter_dead_connections' % repr(peer_id))
+        peer = self._peers.pop(address)
         peer.disconnect()
-        self._dead.append(peer)
+        self._dead.append(peer_id)
 
     def broadcast_new_pieces():
       for k in range(len(self._bitfield)):
@@ -166,19 +124,10 @@ class Session(object):
          peer.egress_bandwidth.bandwidth * 8. / 1048576))
 
   def start(self):
-    self._listener = PeerListener(self.add_peer, io_loop=self._io_loop, port=self._port)
-    self._port = self._listener.port
-    self._peers = PeerSet(self)
     self._io_loop.add_callback(self.maintenance)
     self._logging_timer = tornado.ioloop.PeriodicCallback(self.periodic_logging,
         self.LOGGING_INTERVAL.as_(Time.MILLISECONDS), self._io_loop)
     self._logging_timer.start()
-    self._scheduler.schedule()
-    self._io_loop.start()
 
   def stop(self):
-    self._listener.stop()
-    self._logging_timer.start()
-    self._filemanager.stop()
-    self._scheduler.stop()
-    self._io_loop.stop()
+    self._logging_timer.stop()

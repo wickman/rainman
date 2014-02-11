@@ -251,8 +251,7 @@ class PieceBroker(PieceManager):
                    piece.block[offset:offset + slice_.length]))
       offset += slice_.length
     yield slices
-    yield gen.Task(self.validate, piece)
-    callback()
+    callback((yield gen.Task(self.validate, piece)))
 
   # XXX(wickman) This logic is actually incorrect when the block is bigger than a piece.
   # Consider correcting that, though it isn't a big priority.
@@ -267,7 +266,7 @@ class PieceBroker(PieceManager):
     self._sliceset.add(piece_slice)
     if full_slice not in self._sliceset:
       # the piece isn't complete so don't bother with an expensive calculation
-      callback()
+      callback(False)
       return
 
     log.debug('FileIOPool.touch: Performing SHA1 on piece %s' % piece.index)
@@ -278,12 +277,13 @@ class PieceBroker(PieceManager):
       log.debug('FileIOPool.touch: Finished piece %s!' % piece.index)
       self._bitfield[piece.index] = True
       self.update_cache(piece.index)
+      callback(True)
     else:
       # the hash was incorrect.  none of this data is good.
       log.debug('FileIOPool.touch: Corrupt piece %s, erasing extent %s' % (
           piece.index, full_slice))
       self._sliceset.erase(full_slice)
-    callback()
+      callback(False)
 
   def stop(self):
     self._iopool.stop()

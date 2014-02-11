@@ -85,17 +85,21 @@ class Peer(PeerDriver):
   class BadMessage(Error): pass
   class PeerInactive(Error): pass
 
-  def __init__(self, iostream, piece_manager):
-    self._id = None
-    self._active = True
-    self._piece_manager = piece_manager
-    self._bitfield = Bitfield(piece_manager.num_pieces)  # remote bitfield
+  def __init__(self, peer_id, iostream, piece_broker):
+    self._id = peer_id
+    self._active = False
+    self._piece_broker = piece_broker
+    self._bitfield = Bitfield(piece_broker.num_pieces)  # remote bitfield
     self._in = ConnectionState()
     self._out = ConnectionState()
     self._iostream = iostream
     self._bitfield_callbacks = []
     self._receive_callbacks = []
     super(Peer, self).__init__()
+
+  @property
+  def active(self):
+    return self._active
 
   @property
   def iostream(self):
@@ -149,16 +153,26 @@ class Peer(PeerDriver):
     for callback in self._bitfield_callbacks:
       callback(haves, have_nots)
 
-  def _invoke_piece_receipt(self, piece):
+  def _invoke_piece_receipt(self, piece, full):
     for callback in self._piece_callbacks:
-      callback(piece, self.id)
+      callback(piece, full, self.id)
+
+  def activate(self):
+    self._active = True
 
   # -- runner
   @gen.engine
-  def run(self):
-    yield self.send_bitfield(self._piece_manager.bitfield)
+  def start(self):
+    yield self.send_bitfield(self._piece_broker.bitfield)
     while self._active:
       yield self.recv()
+
+  def stop(self):
+    log.debug('Disconnecting from [%s]' % self._id)
+    self._active = False
+    if self._iostream:
+      self._iostream.close()
+      self._iostream = None
 
   #---- sends
   @gen.coroutine
@@ -199,7 +213,7 @@ class Peer(PeerDriver):
     # In case the piece is actually an unpopulated request, populate.
     if isinstance(piece, Request):
       piece = Piece(piece.index, piece.offset, piece.length,
-                    (yield gen.Task(self._piece_manager.read, piece)))
+                    (yield gen.Task(self._piece_broker.read, piece)))
 
     yield super(Peer, self).send_piece(piece)
     self._out.sent(piece.length)
@@ -254,7 +268,7 @@ class Peer(PeerDriver):
   @gen.coroutine
   def request(self, request):
     log.debug('Peer [%s] requested %s' % (self._id, request))
-    if self._piece_manager.covers(request):
+    if self._piece_broker.covers(request):
       log.debug('   => we have %s, initiating send.' % request)
       # TODO(wickman) instead add to queue, allow scheduler to determine when to initiate
       yield self.send_piece(request)
@@ -270,12 +284,4 @@ class Peer(PeerDriver):
   def piece(self, piece):
     log.debug('Received %s from [%s]' % (piece, self._id))
     self._in.sent(piece.length)
-    yield gen.Task(self._piece_manager.write, piece)
-    self._invoke_piece_receipt(piece)
-
-  def disconnect(self):
-    log.debug('Disconnecting from [%s]' % self._id)
-    if self._iostream:
-      self._iostream.close()
-      self._iostream = None
-    self._active = False
+    self._invoke_piece_receipt(piece, (yield gen.Task(self._piece_broker.write, piece)))

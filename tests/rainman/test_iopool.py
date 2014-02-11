@@ -1,10 +1,11 @@
 from tornado.testing import AsyncTestCase
 
-# we should have a full-on IOPool test too, but this is easier for now
 from rainman.fileset import FileSet, Piece, Request
 from rainman.piece_manager import PieceBroker
 
 
+# TODO(wickman) We should have a more IOPool-specific test, instead this
+# just tests the IOPool via PieceBroker which seems slightly wrong.
 class TestFileIOPool(AsyncTestCase):
   FILES = [('a.txt', 10000), ('b.txt', 20000), ('c.txt', 5000)]
   PIECE_SIZE = 4096
@@ -32,7 +33,7 @@ class TestFileIOPool(AsyncTestCase):
 
     # write
     pc = Piece(2, 0, 5000, block=b'\x01'*5000)
-    def write_done():
+    def write_done(_):
       self.stop()
     pb.write(pc, write_done)
     self.wait()

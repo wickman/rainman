@@ -12,7 +12,7 @@ from twitter.common import log
 
 
 class PeerSet(object):
-  """A set of Peers for whom connections may be established.
+  """A set of Peers with whom connections may be established.
 
      In practice this periodically refreshes from a tracker.
   """

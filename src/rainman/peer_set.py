@@ -11,7 +11,7 @@ from tornado import httpclient
 from twitter.common import log
 
 
-class PeerSet(object):
+class PeerTracker(object):
   """A set of Peers with whom connections may be established.
 
      In practice this periodically refreshes from a tracker.

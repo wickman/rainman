@@ -131,11 +131,19 @@ class Peer(PeerDriver):
     return self._id
 
   @property
-  def is_choked(self):
+  def remote_choked(self):
+    return self._in.choked
+
+  @property
+  def local_choked(self):
     return self._out.choked
 
   @property
-  def is_interested(self):
+  def remote_interested(self):
+    return self._in.interested
+
+  @property
+  def local_interested(self):
     return self._out.interested
 
   @property
@@ -198,7 +206,7 @@ class Peer(PeerDriver):
 
   @gen.coroutine
   def send_not_interested(self):
-    if not self._out.interested:  # already interested
+    if not self._out.interested:  # already not interested
       return
     self._out.interested = False
     yield super(Peer, self).send_interested()
@@ -284,4 +292,4 @@ class Peer(PeerDriver):
   def piece(self, piece):
     log.debug('Received %s from [%s]' % (piece, self._id))
     self._in.sent(piece.length)
-    self._invoke_piece_receipt(piece, (yield gen.Task(self._piece_broker.write, piece)))
+    self._invoke_piece_receipt((piece, (yield gen.Task(self._piece_broker.write, piece))))

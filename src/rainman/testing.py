@@ -3,7 +3,8 @@ import os
 
 from rainman.fileset import FileSet
 from rainman.metainfo import MetaInfoBuilder, Torrent
-from rainman.piece_manager import PieceBroker, PieceManager
+from rainman.piece_broker import PieceBroker
+from rainman.piece_manager import PieceManager
 
 from twitter.common.contextutil import temporary_dir
 

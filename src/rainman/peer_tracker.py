@@ -9,9 +9,79 @@ from .codec import BDecoder
 import tornado
 from tornado import httpclient
 from twitter.common import log
+from twitter.common.lang import Compatibility
+
+if Compatibility.PY3:
+  import urllib.parse as urlparse
+else:
+  import urlparse
 
 
-class PeerTracker(object):
+class PeerTracker(dict):
+  """Base class for PeerTracker.  Implements a dictionary of peer_id => address."""
+  class Error(Exception): pass
+  class UnknownScheme(Error): pass
+
+  _REGISTRY = {}
+
+  @classmethod
+  def get(cls, torrent, peer_id, session):
+    if torrent.announce is None:
+      return EmptyPeerTracker()
+    fullurl = urlparse.urlparse(torrent.announce)
+    if fullurl.scheme not in cls._REGISTRY:
+      raise cls.UnknownScheme('Unknown announcer scheme: %s' % fullurl.scheme)
+    tracker_impl = cls._REGISTRY[fullurl.scheme]
+    return tracker_impl(torrent, peer_id, session)
+
+  @classmethod
+  def register(cls, scheme, impl):
+    if not issubclass(impl, cls):
+      raise ValueError('%s.register expects instances of %s' % (
+          cls.__name__, cls.__name__))
+    cls._REGISTRY[scheme] = impl
+
+  def start(self):
+    pass
+
+  def stop(self):
+    pass
+
+
+class EmptyPeerTracker(PeerTracker):
+  pass
+
+
+class StaticPeerTracker(PeerTracker):
+  def __init__(self, torrent, *_):
+    fullurl = urlparse.urlparse(torrent.announce)
+    assert fullurl.scheme in ('', 'file')
+    self._filename = fullurl.path
+
+  def start(self):
+    with open(self._filename) as fp:
+      for line in fp:
+        try:
+          peer_id, host, port = line.strip().split()
+          port = int(port)
+        except ValueError:
+          log.debug('StaticPeerTracker got bad line: %s' % line)
+          continue
+        self[peer_id] = (host, port)
+
+  def stop(self):
+    self.clear()
+
+
+PeerTracker.register('', StaticPeerTracker)
+PeerTracker.register('file', StaticPeerTracker)
+
+
+class ZookeeperPeerTracker(object):
+  pass
+
+
+class HttpPeerTracker(object):
   """A set of Peers with whom connections may be established.
 
      In practice this periodically refreshes from a tracker.

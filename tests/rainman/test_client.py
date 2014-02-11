@@ -2,8 +2,8 @@ from contextlib import contextmanager
 import socket
 import threading
 
+from rainman.client import Client
 from rainman.handshake import PeerHandshake
-from rainman.peer_broker import PeerBroker
 from rainman.peer_id import PeerId
 from rainman.testing import make_metainfo, make_torrent
 
@@ -23,10 +23,10 @@ LogOptions.set_stderr_log_level('google:DEBUG')
 log.init('derp')
 
 
-class SocketPeerBroker(PeerBroker):
+class SocketClient(Client):
   def __init__(self, peer_id, sock, io_loop, port):
     self.__sock = sock
-    super(SocketPeerBroker, self).__init__(peer_id, io_loop=io_loop, port=port)
+    super(SocketClient, self).__init__(peer_id, io_loop=io_loop, port=port)
 
   def _do_bind(self, port):
     self.add_sockets([self.__sock])
@@ -43,20 +43,20 @@ class FakeSession(object):
     self.iostream = iostream
 
 
-class TestPeerBroker(AsyncTestCase):
+class TestClient(AsyncTestCase):
   SERVER_PEER_ID = PeerId.generate()
   CLIENT_PEER_ID = PeerId.generate()
 
   @contextmanager
   def make_peer_broker(self, torrent, peer_id):
     listener, port = bind_unused_port()
-    peer_broker = SocketPeerBroker(peer_id, listener, self.io_loop, port)
+    peer_broker = SocketClient(peer_id, listener, self.io_loop, port)
     peer_broker.register_torrent(torrent, session_provider=FakeSession)
     yield peer_broker
 
   def test_unregistered_torrent(self):
     listener, port = bind_unused_port()
-    peer_broker = SocketPeerBroker(self.SERVER_PEER_ID, listener, self.io_loop, port)
+    peer_broker = SocketClient(self.SERVER_PEER_ID, listener, self.io_loop, port)
     with make_metainfo([('a.txt', 'hello world')], 4) as metainfo:
       handshake = PeerHandshake.make(metainfo, peer_id=self.CLIENT_PEER_ID)
       client_stream = IOStream(socket.socket(), io_loop=self.io_loop)
@@ -68,7 +68,7 @@ class TestPeerBroker(AsyncTestCase):
   @gen_test
   def test_handle_stream(self):
     listener, port = bind_unused_port()
-    peer_broker = SocketPeerBroker(self.SERVER_PEER_ID, listener, self.io_loop, port)
+    peer_broker = SocketClient(self.SERVER_PEER_ID, listener, self.io_loop, port)
     with make_torrent([('a.txt', 'hello world')], 4, 'asdfasdf') as torrent:
       peer_broker.register_torrent(torrent, session_provider=FakeSession)
       handshake = PeerHandshake.make(torrent.info, peer_id=self.CLIENT_PEER_ID)

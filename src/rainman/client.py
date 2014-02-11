@@ -15,7 +15,7 @@ from twitter.common.quantity import Amount, Time
 TorrentInfo = namedtuple('TorrentInfo', 'torrent session session_provider')
 
 
-class PeerBroker(TCPServer):
+class Client(TCPServer):
   class Error(Exception): pass
   class BindError(Error): pass
 
@@ -27,7 +27,7 @@ class PeerBroker(TCPServer):
     self._ip = socket.gethostbyname(socket.gethostname())
     self._torrents = {}  # map from handshake prefix => TorrentInfo
     self._failed_handshakes = 0
-    super(PeerBroker, self).__init__(io_loop=io_loop)
+    super(Client, self).__init__(io_loop=io_loop)
     self._port = self._do_bind(port)
     log.debug('Bound at port %s' % self._port)
 
@@ -118,7 +118,7 @@ class PeerBroker(TCPServer):
 
   @gen.engine
   def handle_stream(self, iostream, address):
-    log.debug('PeerBroker got incoming connection from %s' % (address,))
+    log.debug('Client got incoming connection from %s' % (address,))
     handshake_prefix = yield gen.Task(iostream.read_bytes, PeerHandshake.PREFIX_LENGTH)
     try:
       torrent, session = self.establish_session(handshake_prefix)

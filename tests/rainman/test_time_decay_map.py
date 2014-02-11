@@ -1,4 +1,4 @@
-from rainman.scheduler import TimeDecayMap
+from rainman.time_decay_map import TimeDecayMap
 
 from twitter.common.quantity import Amount, Time
 

@@ -1,5 +1,6 @@
 import datetime
 import hashlib
+import random
 import socket
 import struct
 import urllib  # XXX PY3
@@ -46,6 +47,9 @@ class PeerTracker(dict):
 
   def stop(self):
     pass
+
+  def get_random(self):
+    return random.choice(list(self.items()))
 
 
 class EmptyPeerTracker(PeerTracker):

@@ -3,11 +3,10 @@ import math
 import os
 import struct
 
-from twitter.common import log
 from twitter.common.lang import Compatibility
 
 
-class fileslice(object):
+class SliceBase(object):
   """A :class:`slice` over a file."""
   class Error(Exception): pass
   class ReadError(Error): pass
@@ -18,12 +17,12 @@ class fileslice(object):
     self._slice = slice_
     assert self.length >= 0
 
-  def rooted_at(self, path):
-    return fileslice(os.path.join(path, self._filename), self._slice)
+  def rooted_at(self, chroot):
+    return self.__class__(os.path.join(chroot, self.filename), self._slice)
 
   @property
-  def length(self):
-    return self.stop - self.start
+  def filename(self):
+    return self._filename
 
   @property
   def start(self):
@@ -33,10 +32,47 @@ class fileslice(object):
   def stop(self):
     return self._slice.stop
 
+  @property
+  def length(self):
+    return self.stop - self.start
+
   # Force fileslice objects to be contiguous
   @property
   def step(self):
     return None
+
+  def read(self):
+    raise NotImplemented
+
+  def write(self, data):
+    raise NotImplemented
+
+  def __repr__(self):
+    return '%s(%r[%r,%r])' % (self.__class__.__name__, self._filename, self.start, self.stop)
+
+
+class fileslice(SliceBase):
+  """A :class:`slice` over a real file."""
+  def read(self):
+    with open(self._filename, 'rb') as fp:
+      fp.seek(self.start)
+      data = fp.read(self.length)
+      if len(data) != self.length:
+        raise self.ReadError('File is truncated at this slice!')
+      return data
+
+  def write(self, data):
+    if len(data) != (self.stop - self.start):
+      raise self.WriteError('Block must be of appropriate size!')
+    with open(self._filename, 'r+b') as fp:
+      fp.seek(self.start)
+      fp.write(data)
+
+
+"""
+#TODO(wickman) Implement for tests.
+class memslice(SliceBase):
+  _FAKE_FS = {}
 
   def read(self):
     with open(self._filename, 'rb') as fp:
@@ -47,16 +83,15 @@ class fileslice(object):
       log.debug('%s read %d bytes [%s]' % (self, self.length, data))
       return data
 
-  def write(self, data):
-    log.debug('%s writing %d bytes [%s]' % (self, len(data), data))
+  def write(self, data, into=None):
+    into = into or self.filename
+    log.debug('%s writing %d bytes into %s' % (self, len(data), data, into))
     if len(data) != (self.stop - self.start):
       raise self.WriteError('Block must be of appropriate size!')
-    with open(self._filename, 'r+b') as fp:
+    with open(into, 'r+b') as fp:
       fp.seek(self.start)
       fp.write(data)
-
-  def __repr__(self):
-    return 'fileslice(%r[%r,%r])' % (self._filename, self.start, self.stop)
+"""
 
 
 class Request(object):
@@ -94,8 +129,8 @@ class FileSet(object):
   """A logical concatenation of files, chunked into chunk sizes."""
 
   @classmethod
-  def from_torrent(cls, torrent):
-    return cls([(mif.name, mif.length) for mif in torrent.info.files], torrent.info.piece_size)
+  def from_metainfo(cls, metainfo):
+    return cls([(mif.name, mif.length) for mif in metainfo.files], metainfo.piece_size)
 
   def __init__(self, files, piece_size):
     """:param files: Ordered list of (filename, filesize) tuples.

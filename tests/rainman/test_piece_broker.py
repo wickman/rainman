@@ -3,7 +3,8 @@ import hashlib
 import os
 
 from rainman.fileset import FileSet, Piece, Request
-from rainman.piece_manager import PieceBroker, PieceManager
+from rainman.piece_broker import PieceBroker
+from rainman.piece_manager import PieceManager
 from rainman.testing import make_fileset
 
 from tornado import gen
@@ -22,9 +23,12 @@ class TestPieceBroker(AsyncTestCase):
       size = fs.size
 
       pm = PieceManager(fs, chroot=td)
+      pm.initialize()
       pb1 = PieceBroker(fs, chroot=td, piece_hashes=list(pm.iter_hashes()), io_loop=self.io_loop)
+      pb1.initialize()
       pb2 = PieceBroker(
           fs, chroot=safe_mkdtemp(), piece_hashes=list(pm.iter_hashes()), io_loop=self.io_loop)
+      pb2.initialize()
 
       # make sure pb1 is complete and pb2 is not
       for k in range(fs.num_pieces):

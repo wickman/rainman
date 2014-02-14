@@ -1,7 +1,7 @@
 from tornado.testing import AsyncTestCase
 
 from rainman.fileset import FileSet, Piece, Request
-from rainman.piece_manager import PieceBroker
+from rainman.piece_broker import PieceBroker
 
 
 # TODO(wickman) We should have a more IOPool-specific test, instead this
@@ -17,6 +17,8 @@ class TestFileIOPool(AsyncTestCase):
   def test_basic(self):
     fs = self.fileset()
     pb = PieceBroker(fs, io_loop=self.io_loop)
+    pb.initialize()
+
     all_files_size = sum(fp[1] for fp in self.FILES)
 
     # test reads

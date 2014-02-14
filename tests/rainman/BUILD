@@ -9,6 +9,7 @@ python_test_suite(name = 'all',
     pants(':test_peer_driver'),
     pants(':test_piece_broker'),
     pants(':test_piece_manager'),
+    pants(':test_piece_set'),
     pants(':test_sliceset'),
     pants(':test_time_decay_map'),
   ]
@@ -55,6 +56,14 @@ python_tests(
 )
 
 python_tests(
+  name = 'test_integration',
+  sources = ['test_integration.py'],
+  dependencies = [
+    pants('src/rainman'),
+  ],
+)
+
+python_tests(
   name = 'test_iopool',
   sources = ['test_iopool.py'],
   dependencies = [
@@ -82,6 +91,14 @@ python_tests(
 python_tests(
   name = 'test_piece_manager',
   sources = ['test_piece_manager.py'],
+  dependencies = [
+    pants('src/rainman'),
+  ],
+)
+
+python_tests(
+  name = 'test_piece_set',
+  sources = ['test_piece_set.py'],
   dependencies = [
     pants('src/rainman'),
   ],

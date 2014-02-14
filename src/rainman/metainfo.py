@@ -9,51 +9,6 @@ from twitter.common.collections import OrderedSet
 from twitter.common.quantity import Amount, Data
 
 
-class Torrent(object):
-  @classmethod
-  def from_file(cls, filename):
-    with open(filename, 'rb') as fp:
-      mi, _ = BDecoder.decode(fp.read())
-    return cls(mi)
-
-  def __init__(self, d=None):
-    self._d = d or {}
-    self._info = MetaInfo(self._d.get('info')) if 'info' in self._d else None
-
-  def to_file(self, filename):
-    assert 'announce' in self._d and 'info' in self._d
-    with open(filename, 'wb') as fp:
-      fp.write(BEncoder.encode(self._d))
-
-  @property
-  def announce(self):
-    return self._d.get('announce')
-
-  @announce.setter
-  def announce(self, value):
-    assert isinstance(value, str)
-    self._d['announce'] = value
-
-  @property
-  def info(self):
-    return self._info
-
-  @property
-  def hash(self):
-    return hashlib.sha1(self.info.raw()).digest()
-
-  @info.setter
-  def info(self, value):
-    if isinstance(value, dict):
-      self._d['info'] = value
-      self._info = MetaInfo(value)
-    elif isinstance(value, MetaInfo):
-      self._info = value
-      self._d['info'] = value.as_dict()
-    else:
-      raise ValueError(value)
-
-
 class MetaInfoFile(object):
   def __init__(self, name, start, end):
     self._name = name
@@ -98,6 +53,7 @@ class MetaInfoBuilder(object):
   class FileNotFound(Error): pass
   class EmptyInfo(Error): pass
 
+  ENCODING = 'utf8'
   MIN_CHUNK_SIZE = Amount(64, Data.KB)
   MAX_CHUNK_SIZE = Amount(1, Data.MB)
   DEFAULT_CHUNKS = 256
@@ -131,11 +87,11 @@ class MetaInfoBuilder(object):
       return int(cls.MAX_CHUNK_SIZE.as_(Data.BYTES))
     return chunksize
 
-  def build(self):
+  def build(self, piece_size=None):
     if len(self._files) == 0:
       raise self.EmptyInfo("No files in metainfo!")
     total_size = sum(value[0] for value in self._stats.values())
-    piece_size = self.choose_size(total_size)
+    piece_size = piece_size or self.choose_size(total_size)
     d = {
       'pieces': ''.join(hashlib.sha1(chunk).digest() for chunk in self.iter_chunks(piece_size)),
       'piece length': piece_size

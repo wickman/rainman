@@ -12,6 +12,7 @@ import pytest
 
 def test_empty_input():
   pm = PieceManager(FileSet((), 1))
+  pm.initialize()
   chunks = list(pm.iter_pieces())
   hashes = list(pm.iter_hashes())
   try:
@@ -33,6 +34,7 @@ def test_single():
 
   for pair in pairs:
     pm = PieceManager(FileSet([('hello_world', pair[0])], pair[1]))
+    pm.initialize()
     chunks = list(pm.iter_pieces())
     hashes = list(pm.iter_hashes())
 
@@ -82,6 +84,9 @@ def test_many():
       chroot=d1)
   pm2 = PieceManager(FileSet([('two.txt', 8), ('four.txt', 16)], piece_size=13), chroot=d2)
   pm3 = PieceManager(FileSet([('six.txt', 24)], piece_size=13), chroot=d3)
+  pm1.initialize()
+  pm2.initialize()
+  pm3.initialize()
 
   try:
     assert list(pm1.iter_pieces()) == list(pm2.iter_pieces())

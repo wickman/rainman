@@ -33,8 +33,8 @@ class PieceManager(object):
   DEFAULT_SPLAT_BYTES = 64 * 1024
 
   @classmethod
-  def from_torrent(cls, torrent, **kw):
-    return cls(FileSet.from_torrent(torrent), list(torrent.info.pieces), **kw)
+  def from_metainfo(cls, metainfo, **kw):
+    return cls(FileSet.from_metainfo(metainfo), list(metainfo.pieces), **kw)
 
   @classmethod
   def fill(cls, filename, size, splat=None):
@@ -90,6 +90,10 @@ class PieceManager(object):
       _, leftover = divmod(self.total_size, self._fileset.piece_size)
       assembled += self._fileset.piece_size if not leftover else leftover
     return assembled
+
+  @property
+  def left(self):
+    return self.total_size - self.assembled_size
 
   @property
   def hashfile(self):
@@ -163,13 +167,16 @@ class PieceManager(object):
     return self._fileset.piece_size
 
   def iter_blocks(self, index, block_size):
-    """yield :class:`Request` objects for the piece at index with a given block size"""
+    """yield :class:`Request` objects for the piece at index with a given block size
+       that are not yet part of the sliceset."""
     piece_size = self.piece_size(index)
     for start_offset in range(0, piece_size, block_size):
-      yield Request(
+      request = Request(
           index,
           start_offset,
           block_size if start_offset + block_size <= piece_size else piece_size % block_size)
+      if self.to_slice(request) not in self._sliceset:
+        yield request
 
   def iter_pieces(self):
     """iterate over the pieces backed by this fileset.  blocking."""

@@ -20,7 +20,6 @@ class ConnectionState(object):
     self._last_alive = time.time()
     self._interested = False
     self._choked = True
-    self._queue = []
     self._sent = 0
     self._bandwidth = Bandwidth(window=self.BW_COLLECTION_INTERVAL)
 
@@ -29,10 +28,6 @@ class ConnectionState(object):
       self._last_alive = time.time()
       return fn(self, *args, **kw)
     return wrapper
-
-  @property
-  def queue(self):
-    return self._queue
 
   @property
   def healthy(self):
@@ -67,10 +62,6 @@ class ConnectionState(object):
     self._interested = bool(value)
 
   @updates_keepalive
-  def cancel_request(self, piece):
-    self._queue = [pc for pc in self._queue if pc != piece]
-
-  @updates_keepalive
   def sent(self, num_bytes):
     self._sent += num_bytes
     self._bandwidth.add(num_bytes)
@@ -93,6 +84,7 @@ class Peer(PeerDriver):
     self._in = ConnectionState()
     self._out = ConnectionState()
     self._iostream = iostream
+    self._request_queue = []
     self._bitfield_callbacks = []
     self._receive_callbacks = []
     super(Peer, self).__init__()
@@ -155,15 +147,15 @@ class Peer(PeerDriver):
     self._bitfield_callbacks.append(callback)
 
   def register_piece_receipt(self, callback):
-    self._piece_callbacks.append(callback)
+    self._receive_callbacks.append(callback)
 
   def _invoke_bitfield_change(self, haves, have_nots):
     for callback in self._bitfield_callbacks:
       callback(haves, have_nots)
 
   def _invoke_piece_receipt(self, piece, full):
-    for callback in self._piece_callbacks:
-      callback(piece, full, self.id)
+    for callback in self._receive_callbacks:
+      callback(piece, full)
 
   def activate(self):
     self._active = True
@@ -212,7 +204,21 @@ class Peer(PeerDriver):
     yield super(Peer, self).send_interested()
 
   @gen.coroutine
-  def send_piece(self, piece, callback=None):
+  def send_next_piece(self):
+    if self._out.choked or not self._out.interested or not self._request_queue:
+      return
+    piece = self._request_queue.pop(0)
+    yield self.send_piece(piece)
+
+  @gen.coroutine
+  def send_all_pieces(self):
+    if self._out.choked or not self._out.interested or not self._request_queue:
+      return
+    all_requests, self._request_queue = self._request_queue, []
+    yield [self.send_piece(request) for request in all_requests]
+
+  @gen.coroutine
+  def send_piece(self, piece):
     if not self._out.interested or self._out.choked:
       log.debug('Skipping send of %s to [%s] (interested:%s, choked:%s)' % (
           piece, self._id, self._out.interested, self._out.choked))
@@ -227,6 +233,7 @@ class Peer(PeerDriver):
     self._out.sent(piece.length)
 
   # --- PeerDriver impls
+  # TODO(wickman) update_keepalive should be implemented on this end, not on ConnectionState?
   @gen.coroutine
   def keepalive(self):
     self._in.ping()
@@ -234,11 +241,13 @@ class Peer(PeerDriver):
   @gen.coroutine
   def choke(self):
     log.debug('Peer [%s] choking us.' % self._id)
+    self._in.ping()
     self._out.choked = True
 
   @gen.coroutine
   def unchoke(self):
     log.debug('Peer [%s] unchoking us.' % self._id)
+    self._in.ping()
     self._out.choked = False
 
   @gen.coroutine
@@ -254,12 +263,15 @@ class Peer(PeerDriver):
   @gen.coroutine
   def have(self, index):
     self._bitfield[index] = True
+    self._in.ping()
     log.debug('Peer [%s] has piece %s.' % (self._id, index))
     self._invoke_bitfield_change([index], [])
 
   @gen.coroutine
   def bitfield(self, bitfield):
-    # test
+    # Technically we should never encounter have_nots -- the bitfield ought
+    # to be the first message that we get before any haves.
+    self._in.ping()
     haves, have_nots = [], []
     for index, (old, new) in enumerate(zip(self._bitfield, bitfield)):
       if old and not new:
@@ -276,20 +288,21 @@ class Peer(PeerDriver):
   @gen.coroutine
   def request(self, request):
     log.debug('Peer [%s] requested %s' % (self._id, request))
+    self._in.ping()
     if self._piece_broker.covers(request):
-      log.debug('   => we have %s, initiating send.' % request)
-      # TODO(wickman) instead add to queue, allow scheduler to determine when to initiate
-      yield self.send_piece(request)
+      log.debug('   => we have %s, queueing request.' % request)
+      self._request_queue.append(request)
     else:
       log.debug('   => do not have %s, ignoring.' % request)
 
   @gen.coroutine
   def cancel(self, request):
     log.debug('Peer [%s] canceling %s' % (self._id, request))
-    self._in.cancel_request(request)
+    self._request_queue = [r for r in self._request_queue if r != request]
+    self._in.ping()
 
   @gen.coroutine
   def piece(self, piece):
     log.debug('Received %s from [%s]' % (piece, self._id))
     self._in.sent(piece.length)
-    self._invoke_piece_receipt((piece, (yield gen.Task(self._piece_broker.write, piece))))
+    self._invoke_piece_receipt(piece, (yield gen.Task(self._piece_broker.write, piece)))

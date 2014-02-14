@@ -27,10 +27,12 @@ class FakeSession(object):
   def __init__(self, torrent, io_loop=None):
     self.torrent = torrent
     self.peer_id, self.iostream = None, None
+    self.peer_ids = []
 
-  def add_peer(self, peer_id, iostream):
-    self.peer_id = peer_id
-    self.iostream = iostream
+  def add_peer(self, peer):
+    self.peer_ids.append(peer.id)
+    self.peer_id = peer.id
+    self.iostream = peer.iostream
 
 
 class SocketClient(Client):
@@ -59,7 +61,7 @@ class TestClient(AsyncTestCase):
     listener, port = bind_unused_port()
     peer_broker = SocketClient(self.SERVER_PEER_ID, listener, self.io_loop, port)
     peer_broker.listen()
-    with make_metainfo([('a.txt', 'hello world')], 4) as metainfo:
+    with make_metainfo([('a.txt', 'hello world')], 4) as (_, _, metainfo):
       handshake = PeerHandshake.make(metainfo, peer_id=self.CLIENT_PEER_ID)
       client_stream = IOStream(socket.socket(), io_loop=self.io_loop)
       yield gen.Task(client_stream.connect, ('localhost', port))

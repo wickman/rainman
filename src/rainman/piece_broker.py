@@ -1,25 +1,15 @@
 import hashlib
-import os
-import tempfile
 
 from .bitfield import Bitfield
 from .fileset import (
-    FileSet,
     fileslice,
     Piece,
     Request,
 )
 from .iopool import IOPool
 from .piece_manager import PieceManager
-from .sliceset import SliceSet
 
 from tornado import gen, ioloop
-from twitter.common.dirutil import (
-    safe_mkdir,
-    safe_open,
-    safe_rmtree,
-    safe_size,
-)
 from twitter.common import log
 
 

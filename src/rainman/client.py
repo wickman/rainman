@@ -84,6 +84,7 @@ class Client(TCPServer):
       raise self.BindError('Could not bind to any port in range %s' % repr(self.PORT_RANGE))
     log.debug('Client bound to port %d' % self._port)
 
+  # TODO(wickman) implement unregister_torrent
   def register_torrent(self, torrent, root=None, callback=None):
     """Register a torrent with this client.
 
@@ -102,7 +103,9 @@ class Client(TCPServer):
     self._sessions[torrent.handshake_prefix] = session = self._session_impl(
         piece_broker, io_loop=self.io_loop)
     # by default do not start the tracker
-    self._trackers[torrent.handshake_prefix] = PeerTracker.get(torrent, self.peer_id, session)
+    tracker = self._trackers[torrent.handshake_prefix] = PeerTracker.get(
+        torrent, self.peer_id, session)
+    tracker.start()
     if callback:
       callback(session)
 
@@ -269,6 +272,7 @@ class Scheduler(object):
   MAX_REQUESTS = 100
   REQUEST_SIZE = Amount(64, Data.KB)
   DEFAULT_BANDWIDTH_PER_SECOND = Amount(20, Data.MB)
+  CONNECTION_REFRESH_INTERVAL = Amount(5, Time.SECONDS)
 
   def __init__(self,
                client,
@@ -313,7 +317,38 @@ class Scheduler(object):
     peer.register_bitfield_change(functools.partial(self.bitfield_change_callback, torrent))
     session.add_peer(peer)
 
-  @gen.engine
+  @gen.coroutine
+  def _allocate_connections(self):
+    connections = []
+    total_connections = sum(len(session.peer_ids) for session in self.client.sessions)
+    if total_connections >= self.MAX_CONNECTIONS:
+      return connections
+    quota = self.MAX_CONNECTIONS - total_connections
+    sessions = [(torrent, session, session.remaining_bytes)
+                for (torrent, session) in self.client.iter_sessions()
+                if session.remaining_bytes]
+    sessions.sort(key=lambda val: val[2], reverse=True)  # sort sessions by remaining
+    aggregate_bytes = sum(val[2] for val in sessions)  # aggregate total
+    sessions = [(torrent, session, int(math.ceil(1. * remaining / aggregate_bytes)))
+                for (torrent, session, remaining) in sessions]  # normalize
+    for torrent, session, allocated in sessions:
+      for k in range(allocated):
+        if total_connections >= self.MAX_CONNECTIONS:
+          return connections
+        try:
+          peer_id, address = self.client.get_tracker(torrent).get_random()
+        except PeerTracker.EmptySet:
+          break  # continue onto next torrent
+        if peer_id == self.client.peer_id:  # do not connection to self
+          continue
+        if peer_id not in session.peer_ids and (torrent, address) not in connections:
+          connections.append((torrent, address))
+        else:
+          # TODO(wickman) Does it make sense to find another?
+          continue
+    raise gen.Return(connections)
+
+  @gen.coroutine
   def allocate_connections(self):
     """Allocate the connections for this torrent client.
 
@@ -322,47 +357,28 @@ class Scheduler(object):
          and normalize by the total number of outstanding bytes.  Allocate connections
          proportionally until we've hit our connection limit.
 
-       Does not disconnect any leechers.
+       Does not disconnect any leechers, also does not provisionally connect to peers
+       of finished torrents.
     """
-    CONNECTION_REFRESH_INTERVAL = Amount(5, Time.SECONDS)
-    MAX_CONNECTIONS = 20
-
-    def run():
-      connections = []
-      total_connections = sum(len(session.peer_ids) for session in self.client.sessions)
-      if total_connections >= MAX_CONNECTIONS:
-        return connections
-      quota = MAX_CONNECTIONS - total_connections
-      sessions = [(torrent, session, session.remaining_bytes)
-                  for (torrent, session) in self.client.iter_sessions()]
-      sessions.sort(key=lambda torrent, session, remaining: remaining, reverse=True)
-      aggregate_bytes = sum(val[2] for val in sessions)
-      sessions = [(torrent, session, math.ceil(1. * remaining / aggregate_bytes))
-                  for (torrent, session, remaining) in sessions]
-      for torrent, session, allocated in sessions:
-        for k in range(allocated):
-          if total_connections >= MAX_CONNECTIONS:
-            return connections
-          peer_id, address = self.get_tracker(torrent).get_random()
-          if peer_id not in session.peer_ids:
-            connections.append(gen.Task(self.client.initiate_connection, torrent, address))
-          else:
-            # TODO(wickman) Does it make sense to find another?
-            pass
-      return connections
-
-    yield run()
-
+    connections = yield self._allocate_connections()
+    yield [gen.Task(self.client.initiate_connection, torrent, address)
+           for torrent, address in connections]
     if self.active:
-      self.io_loop.add_timeout(CONNECTION_REFRESH_INTERVAL.as_(Time.SECONDS), self.allocate_connections)
+      self.io_loop.add_timeout(self.CONNECTION_REFRESH_INTERVAL.as_(Time.SECONDS),
+          self.allocate_connections)
 
   @gen.engine
   def start(self):
+    self.active = True
+
     self.io_loop.add_callback(self.allocate_connections)
     self.io_loop.add_callback(self.manage_chokes)
 
     while self.active:
       yield self.send_requests()
+
+  def stop(self):
+    self.active = False
 
   def rarest_pieces(self, count=20):
     """Return the top #count rarest pieces across all torrents."""
@@ -389,8 +405,6 @@ class Scheduler(object):
       Inspect the current aggregate ingress and egress bandwidth.
 
       Schedule ingress proportionally to egress performance and vice versa.
-
-
     """
     MIN_OUTSTANDING_REQUESTS = 32  # - how do we enforce this?
     MAX_OUTSTANDING_REQUESTS = 64
@@ -415,7 +429,7 @@ class Scheduler(object):
          'interested' bits are set on peers who have choked us who contain
          these rare pieces.
     """
-    # XXX derp this is wrong
+    # XXX derp this is wrong?
     to_queue = max(0, MAX_OUTSTANDING_REQUESTS - len(self.requests))
 
     interests = []

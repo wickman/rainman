@@ -19,11 +19,19 @@ from twitter.common.dirutil import safe_mkdtemp, safe_open
 from twitter.common.quantity import Amount, Data
 
 
+from twitter.common import log
+from twitter.common.log.options import LogOptions
+LogOptions.set_disk_log_level('NONE')
+LogOptions.set_stderr_log_level('google:DEBUG')
+log.init('derp')
+
+
+
 class SocketClient(Client):
-  def __init__(self, sock, port, io_loop):
+  def __init__(self, sock, port, io_loop, peer_id=None):
     self.__sock = sock
     self.__port = port
-    super(SocketClient, self).__init__(PeerId.generate(), io_loop=io_loop)
+    super(SocketClient, self).__init__(peer_id or PeerId.generate(), io_loop=io_loop)
 
   def listen(self):
     self._port = self.__port
@@ -37,13 +45,13 @@ def random_stream(N):
 def make_ensemble(io_loop, num_seeders=1, num_leechers=1, piece_size=64, seed=31337):
   root = safe_mkdtemp()
 
-  seeder_sockets = [bind_unused_port() for _ in range(num_seeders)]
-  leecher_sockets = [bind_unused_port() for _ in range(num_leechers)]
+  seeder_sockets = [(PeerId.generate(), bind_unused_port()) for _ in range(num_seeders)]
+  leecher_sockets = [(PeerId.generate(), bind_unused_port()) for _ in range(num_leechers)]
   tracker_info = os.path.join(root, 'tracker_info.txt')
   with open(tracker_info, 'w') as fp:
-    for _, port in seeder_sockets + leecher_sockets:
-      print('Writing 127.0.0.1 %d [sock:%s] to tracker_info.txt' % (port, _.fileno()))
-      print('127.0.0.1 %d' % port, file=fp)
+    for peer_id, (_, port) in seeder_sockets + leecher_sockets:
+      print('Writing %s 127.0.0.1 %d to tracker_info.txt' % (peer_id, port))
+      print('%s 127.0.0.1 %d' % (peer_id, port), file=fp)
   tracker_info = 'file://' + tracker_info
 
   random.seed(seed)
@@ -67,14 +75,16 @@ def make_ensemble(io_loop, num_seeders=1, num_leechers=1, piece_size=64, seed=31
   seeder_clients = []
   leecher_clients = []
 
-  for listener, port in seeder_sockets:
-    client = SocketClient(listener, port, io_loop)
+  for peer_id, (listener, port) in seeder_sockets:
+    client = SocketClient(listener, port, io_loop, peer_id)
+    client.listen()
     scheduler = Scheduler(client, request_size=Amount(piece_size/4, Data.BYTES))
     client.register_torrent(torrent, root=os.path.join(root, 'seeder%d' % k))
     seeder_clients.append(scheduler)
 
-  for listener, port in seeder_sockets:
-    client = SocketClient(listener, port, io_loop)
+  for peer_id, (listener, port) in leecher_sockets:
+    client = SocketClient(listener, port, io_loop, peer_id)
+    client.listen()
     scheduler = Scheduler(client, request_size=Amount(piece_size/4, Data.BYTES))
     client.register_torrent(torrent, root=os.path.join(root, 'leecher%d' % k))
     leecher_clients.append(scheduler)
@@ -88,8 +98,8 @@ class TestIntegration(AsyncTestCase):
     torrent, seeders, leechers = make_ensemble(self.io_loop, num_seeders=1, num_leechers=1)
     seeder = seeders[0]
     leecher = leechers[0]
-    seeder.client.listen()
-    #leecher.client.listen()
+
+    # check connection initiation
     assert torrent.handshake_prefix not in seeder.pieces
     assert torrent.handshake_prefix not in leecher.pieces
     yield gen.Task(leecher.client.initiate_connection,
@@ -97,3 +107,18 @@ class TestIntegration(AsyncTestCase):
     assert torrent.handshake_prefix in seeder.pieces
     assert torrent.handshake_prefix in leecher.pieces
 
+    # check client peer tracker is populated
+    peer_tracker = seeder.client.get_tracker(torrent)
+    assert peer_tracker
+
+  @gen_test
+  def test_allocate_connections(self):
+    torrent, seeders, leechers = make_ensemble(self.io_loop, num_seeders=1, num_leechers=1)
+    seeder = seeders[0]
+    leecher = leechers[0]
+
+    # check connection alocation
+    connections = yield seeder._allocate_connections()
+    assert connections == []
+    connections = yield leecher._allocate_connections()
+    assert connections == [(torrent, ('127.0.0.1', seeder.client.port))]

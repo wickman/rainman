@@ -22,6 +22,7 @@ class PeerTracker(dict):
   """Base class for PeerTracker.  Implements a dictionary of peer_id => address."""
   class Error(Exception): pass
   class UnknownScheme(Error): pass
+  class EmptySet(Error): pass
 
   _REGISTRY = {}
 
@@ -49,6 +50,8 @@ class PeerTracker(dict):
     pass
 
   def get_random(self):
+    if not self:  # if no elements
+      raise self.EmptySet('No peers available to allocate.')
     return random.choice(list(self.items()))
 
 

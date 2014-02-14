@@ -74,7 +74,7 @@ class TestClient(AsyncTestCase):
     listener, port = bind_unused_port()
     peer_broker = SocketClient(self.SERVER_PEER_ID, listener, self.io_loop, port)
     peer_broker.listen()
-    with make_torrent([('a.txt', 'hello world')], 4, 'asdfasdf') as torrent:
+    with make_torrent([('a.txt', 'hello world')], 4, 'testing://') as (_, _, torrent):
       peer_broker.register_torrent(torrent)
       handshake = PeerHandshake.make(torrent.info, peer_id=self.CLIENT_PEER_ID)
       client_stream = IOStream(socket.socket(), io_loop=self.io_loop)
@@ -87,7 +87,7 @@ class TestClient(AsyncTestCase):
 
   @gen_test
   def test_initiate_connection(self):
-    with make_torrent([('a.txt', 'hello world')], 4, 'asdfasdf') as torrent:
+    with make_torrent([('a.txt', 'hello world')], 4, 'testing://') as (_, _, torrent):
       with self.make_peer_broker(torrent, self.SERVER_PEER_ID) as server:
         with self.make_peer_broker(torrent, self.CLIENT_PEER_ID) as client:
           server.listen()

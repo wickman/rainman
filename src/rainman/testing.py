@@ -43,7 +43,7 @@ def make_piece_broker(filelist, piece_size, complete=False, **kw):
 
 @contextmanager
 def make_torrent(filelist, piece_size, tracker):
-  with make_metainfo(filelist, piece_size) as td, fs, metainfo:
+  with make_metainfo(filelist, piece_size) as (td, fs, metainfo):
     torrent = Torrent()
     torrent.info = metainfo
     torrent.announce = tracker

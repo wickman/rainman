@@ -54,9 +54,15 @@ class PeerTracker(dict):
       raise self.EmptySet('No peers available to allocate.')
     return random.choice(list(self.items()))
 
+  def __init__(self, *args, **kw):
+    pass
+
 
 class EmptyPeerTracker(PeerTracker):
   pass
+
+
+PeerTracker.register('testing', EmptyPeerTracker)
 
 
 class StaticPeerTracker(PeerTracker):

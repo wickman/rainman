@@ -307,7 +307,7 @@ class Scheduler(object):
 
   def piece_receipt_callback(self, torrent, piece, finished):
     # TODO(wickman) if finished, remove all pieces with this index
-    self.sent_requests.remove((torrent.handshake_prefix, piece))
+    self.sent_requests.remove((torrent.handshake_prefix, piece.to_request()))
 
   def notify_new_pieces(self, torrent, haves, _):
     # If we've received any new pieces, wake up consumers.
@@ -508,21 +508,18 @@ class Scheduler(object):
         for block in broker.iter_blocks(index, request_size):
           key = (torrent.handshake_prefix, block)
           random_peer = random.choice(owners)
-          #log.debug('[%s] queueing %s from %s' % (self.client.peer_id, block, random_peer))
 
-          if self.requests.contains(key, random_peer):
+          # There is technically a race condition between broker.iter_blocks and
+          # requests/sent_requests -- it's possible for the bits to be flushed to disk
+          # and the sent_request to be popped.  so we really really cared, we could
+          # doublecheck "if block not in broker.sliceset" as well.
+          if self.requests.contains(key, random_peer) or (
+              self.sent_requests.contains(key, random_peer)):
             log.debug('[%s] already queued: %s' % (self.client.peer_id, block))
             continue
 
           if random_peer.peer_choking:
             if not random_peer.am_interested:
-              log.debug('[%s] Cannot request [%s] status: am_choking:%s am_interested:%s peer_choking:%s peer_interested:%s' % (
-                self.client.peer_id,
-                random_peer,
-                random_peer.am_choking,
-                random_peer.am_interested,
-                random_peer.peer_choking,
-                random_peer.peer_interested))
               log.debug('[%s] want to request %s from %s but we are choked, setting interested.' % (
                   self.client.peer_id, block, random_peer.id))
               yield gen.Task(random_peer.send_interested)
@@ -531,19 +528,21 @@ class Scheduler(object):
               if not owners:
                 log.debug('[%s] No more owners of this block, breaking.' % self.client.peer_id)
                 break
-            log.debug('[%s] Cannot request [%s] status: am_choking:%s am_interested:%s peer_choking:%s peer_interested:%s' % (
-              self.client.peer_id,
-              random_peer,
-              random_peer.am_choking,
-              random_peer.am_interested,
-              random_peer.peer_choking,
-              random_peer.peer_interested))
             continue
+
+          log.debug('[%s] requests %s %s' % (
+              self.client.peer_id,
+              'has' if self.requests.contains(key, random_peer) else 'does not have',
+              block))
+          log.debug('[%s] sent_requests %s %s' % (
+              self.client.peer_id,
+              'has' if self.sent_requests.contains(key, random_peer) else 'does not have',
+              block))
 
           # TODO(wickman) Consider deferring the sem.acquire to before the piece selection
           # in case there is a large delay and the scheduling choice would otherwise change.
-          log.debug('[%s] requesting %s from peer [%s].' % (self.client.peer_id, block, random_peer))
           yield self.requests.add(key, random_peer)
+          log.debug('[%s] requesting %s from peer [%s].' % (self.client.peer_id, block, random_peer))
 
       # yield to somebody else
       yield gen.Task(self.io_loop.add_timeout, self.io_loop.time() + 0.1)
@@ -564,13 +563,9 @@ class Scheduler(object):
         self.io_loop)
     self._manage_chokes_timer.start()
 
-    log.debug('[%s] Queued queue_requests.' % self.client.peer_id)
     self.io_loop.add_callback(self.queue_requests)
-    log.debug('[%s] Queued flush_queues.' % self.client.peer_id)
     self.io_loop.add_callback(self.flush_requests)
-    log.debug('[%s] Queued flush_receipts.' % self.client.peer_id)
     self.io_loop.add_callback(self.flush_receipts)
-    log.debug('[%s] scheduler started.' % self.client.peer_id)
 
   def stop(self):
     assert self.active

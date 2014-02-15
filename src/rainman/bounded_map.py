@@ -27,24 +27,24 @@ class BoundedDecayingMap(object):
   @gen.coroutine
   def add(self, key, peer_id):
     """Indicate that we have requested key from peer_id"""
-    try:
-      while self._concurrent >= self._concurrency:
-        yield self._condition.wait()
-      self._concurrent += 1
-      sentinel = self.io_loop.add_timeout(
-         self.io_loop.time() + self._window,
-         lambda: self.__remove_internal(key, peer_id))
-      self._elements[key].append((peer_id, sentinel))
-    except Exception as e:
-      import traceback
-      log.error(traceback.format_exc())
+    while self._concurrent >= self._concurrency:
+      log.debug('BoundedDecayingMap blocked, waiting.')
+      yield self._condition.wait()
+      log.debug('BoundedDecayingMap unblocked.')
+    self._concurrent += 1
+    sentinel = self.io_loop.add_timeout(
+       self.io_loop.time() + self._window,
+       lambda: self.__remove_internal(key, peer_id))
+    self._elements[key].append((peer_id, sentinel))
 
   def __remove_internal(self, key, peer_id):
     # sanity checks
+    log.debug('BoundedDecayingMap(%s) removing %s:%s to timeout.' % (
+        self, key[1], peer_id))
     assert key in self._elements
     current_size = len(self._elements[key])
     self._elements[key] = [(pid, sentinel) for (pid, sentinel) in self._elements[key]
-                           if pid == peer_id]
+                           if pid != peer_id]
     assert len(self._elements[key]) == current_size - 1
     self._concurrent -= 1
     self._condition.notify(1)

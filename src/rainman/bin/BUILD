@@ -36,7 +36,10 @@ python_binary(
 python_binary(
   name = 'test_integration',
   source = 'test_integration.py',
+  zip_safe = False,
+  always_write_cache = True,
   dependencies = [
     pants('src/rainman'),
+    pants(':twitter.common.app'),
   ]
 )

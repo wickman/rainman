@@ -121,6 +121,14 @@ class Piece(Request):
     super(Piece, self).__init__(index, offset, length)
     self.block = block
 
+  def to_request(self):
+    return Request(self.index, self.offset, self.length)
+
+  def __eq__(self, other):
+    if not isinstance(other, Piece):
+      return False
+    return super(Piece, self).__eq__(other) and self.block == other.block
+
   def __str__(self):
     return 'Piece(%s[%s:%s]*)' % (self.index, self.offset, self.offset + self.length)
 

@@ -7,8 +7,11 @@ class PieceSet(object):
   def __init__(self, length):
     self._num_owners = array.array('B', [0] * length)
 
-  def have(self, index, value=True):
-    self._num_owners[index] += int(value)
+  def add_one(self, index):
+    self._num_owners[index] += 1
+
+  def remove_one(self, index):
+    self._num_owners[index] -= 1
 
   def add(self, bitfield):
     for k in range(len(bitfield)):

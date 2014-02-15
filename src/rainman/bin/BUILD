@@ -32,3 +32,11 @@ python_binary(
     pants(':twitter.common.http'),
   ]
 )
+
+python_binary(
+  name = 'test_integration',
+  source = 'test_integration.py',
+  dependencies = [
+    pants('src/rainman'),
+  ]
+)

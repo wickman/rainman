@@ -19,8 +19,6 @@ class PieceBroker(PieceManager):
   def __init__(self, fileset, piece_hashes=None, chroot=None, io_loop=None):
     super(PieceBroker, self).__init__(fileset, piece_hashes, chroot)
     self._bitfield = Bitfield(len(self._pieces))
-    for index, (piece, actual_piece) in enumerate(zip(self._pieces, self._actual_pieces)):
-      self._bitfield[index] = piece == actual_piece
     self._io_loop = io_loop or ioloop.IOLoop.instance()
     self._iopool = IOPool(io_loop=self._io_loop)
 
@@ -28,6 +26,11 @@ class PieceBroker(PieceManager):
   @property
   def bitfield(self):
     return self._bitfield
+
+  def initialize(self):
+    super(PieceBroker, self).initialize()
+    for index, (piece, actual_piece) in enumerate(zip(self._pieces, self._actual_pieces)):
+      self._bitfield[index] = piece == actual_piece
 
   # ---- io_loop interface
   @gen.engine

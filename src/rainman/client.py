@@ -5,19 +5,22 @@ import functools
 import hashlib
 import math
 import os
+import random
 import socket
 
+from .bounded_map import BoundedDecayingMap
 from .handshake import PeerHandshake
-from .piece_broker import PieceBroker
-from .piece_set import PieceSet
 from .peer import Peer
 from .peer_tracker import PeerTracker
-from .time_decay_map import TimeDecayMap
+from .piece_broker import PieceBroker
 from .session import Session
+from .time_decay_map import TimeDecayMap
 
 from tornado import gen
+from tornado.ioloop import PeriodicCallback
 from tornado.iostream import IOStream
 from tornado.tcpserver import TCPServer
+import toro
 from twitter.common import log
 from twitter.common.dirutil import safe_mkdir, safe_mkdtemp
 from twitter.common.quantity import Amount, Data, Time
@@ -44,6 +47,9 @@ class Client(TCPServer):
     self._session_impl = session_impl
     self._peer_callback = self.default_peer_callback
     super(Client, self).__init__(io_loop=io_loop)
+
+  def log(self, msg):
+    log.debug('[%s]: %s' % (self.peer_id, msg))
 
   @property
   def port(self):
@@ -73,7 +79,7 @@ class Client(TCPServer):
   def listen(self):
     for port in self.PORT_RANGE:
       try:
-        log.debug('Peer listener attempting to bind @ %s' % port)
+        self.log('Peer listener attempting to bind @ %s' % port)
         super(Client, self).listen(port)
         self._port = port
         break
@@ -82,7 +88,7 @@ class Client(TCPServer):
           continue
     else:
       raise self.BindError('Could not bind to any port in range %s' % repr(self.PORT_RANGE))
-    log.debug('Client bound to port %d' % self._port)
+    self.log('Client bound to port %d' % self._port)
 
   # TODO(wickman) implement unregister_torrent
   def register_torrent(self, torrent, root=None, callback=None):
@@ -106,6 +112,7 @@ class Client(TCPServer):
     tracker = self._trackers[torrent.handshake_prefix] = PeerTracker.get(
         torrent, self.peer_id, session)
     tracker.start()
+    session.start()
     if callback:
       callback(session)
 
@@ -145,9 +152,9 @@ class Client(TCPServer):
       if handshake.hash == torrent.hash:
         succeeded = True
       else:
-        log.debug('Mismatched torrent hashes with %s' % handshake.peer_id)
+        self.log('Mismatched torrent hashes with %s' % handshake.peer_id)
     except PeerHandshake.InvalidHandshake as e:
-      log.debug('Got bad handshake: %s' % e)
+      self.log('Got bad handshake: %s' % e)
       iostream.close()
 
     if callback:
@@ -162,32 +169,32 @@ class Client(TCPServer):
       raise self.Error('No session associated with torrent!')
     return torrent, session
 
-  @gen.engine
-  def maybe_add_peer(self, handshake_task, torrent, iostream, session, callback=None):
+  @gen.coroutine
+  def maybe_add_peer(self, handshake_task, torrent, iostream, session):
     peer_id = yield handshake_task
     if peer_id in session.peer_ids:
       iostream.close()
-      callback(None)
-      return
+      raise gen.Return(None)
     if peer_id:
       self._peer_callback(torrent, peer_id, iostream)
-      callback(peer_id)
+      raise gen.Return(peer_id)
     else:
       self._failed_handshakes += 1
       iostream.close()
-      callback(None)
+      raise gen.Return(None)
 
-  @gen.engine
-  def initiate_connection(self, torrent, address, callback=None):
+  @gen.coroutine
+  def initiate_connection(self, torrent, address):
     torrent, session = self.establish_session(torrent.handshake_prefix)
     iostream = IOStream(socket.socket(socket.AF_INET, socket.SOCK_STREAM), io_loop=self.io_loop)
     yield gen.Task(iostream.connect, address)
     handshake_task = gen.Task(self.handshake, torrent, iostream, session)
-    callback((yield gen.Task(self.maybe_add_peer, handshake_task, torrent, iostream, session)))
+    raise gen.Return((yield gen.Task(
+        self.maybe_add_peer, handshake_task, torrent, iostream, session)))
 
-  @gen.engine
+  @gen.coroutine
   def handle_stream(self, iostream, address):
-    log.debug('Client got incoming connection from %s' % (address,))
+    self.log('Client got incoming connection from %s' % (address,))
     handshake_prefix = yield gen.Task(iostream.read_bytes, PeerHandshake.PREFIX_LENGTH)
     try:
       torrent, session = self.establish_session(handshake_prefix)
@@ -269,26 +276,30 @@ class Scheduler(object):
   """
 
   MAX_CONNECTIONS = 20
-  MAX_REQUESTS = 100
+  MAX_REQUESTS = 64
+  MIN_REQUESTS = 32
   REQUEST_SIZE = Amount(64, Data.KB)
   DEFAULT_BANDWIDTH_PER_SECOND = Amount(20, Data.MB)
   CONNECTION_REFRESH_INTERVAL = Amount(5, Time.SECONDS)
+  CHOKE_INTERVAL = Amount(10, Time.SECONDS)
 
   def __init__(self,
                client,
                request_size=REQUEST_SIZE,
+               min_requests=MIN_REQUESTS,
                max_requests=MAX_REQUESTS,
                max_connections=MAX_CONNECTIONS,
                target_bandwidth=DEFAULT_BANDWIDTH_PER_SECOND):
+    self.io_loop = client.io_loop
     self.client = client
     self.client.set_peer_callback(self.peer_callback)
-    self.pieces = {}
     self.active = False
-    self.requests = TimeDecayMap()
-    self.sent_requests = TimeDecayMap()
+    self.requests = BoundedDecayingMap(self.io_loop, concurrency=max_requests)
+    self.sent_requests = BoundedDecayingMap(self.io_loop, concurrency=min_requests)
+    self._pieces_available = toro.Condition(self.io_loop)
 
     # scheduling constants
-    self._request_size = request_size.as_(Data.BYTES)
+    self._request_size = int(request_size.as_(Data.BYTES))
 
   @property
   def num_connections(self):
@@ -296,28 +307,34 @@ class Scheduler(object):
 
   def piece_receipt_callback(self, torrent, piece, finished):
     # TODO(wickman) if finished, remove all pieces with this index
-    self.requests[(torrent.handshake_prefix, piece)].remove(piece)
+    self.sent_requests.remove((torrent.handshake_prefix, piece))
 
-  def bitfield_change_callback(self, torrent, haves, have_nots):
-    piece_set = self.pieces[torrent.handshake_prefix]
-    for have in haves:
-      piece_set.have(have)
-    for have_not in have_nots:
-      piece_set.have_not(have_not, False)
+  def notify_new_pieces(self, torrent, haves, _):
+    # If we've received any new pieces, wake up consumers.
+    log.debug('[%s] notify_new_pieces(%s)' % (self.client.peer_id, hexlify(torrent.handshake_prefix)))
+    session = self.client.get_session(torrent)
+    new_pieces = sum(not session.bitfield[index] for index in haves)
+    if new_pieces:
+      log.debug('[%s] %d pieces have become available for torrent %s' % (
+          self.client.peer_id, new_pieces, hexlify(torrent.handshake_prefix)))
+      self._pieces_available.notify_all()
+
+  def rate_limit_torrent(self, torrent, peer_id):
+    return False
 
   def peer_callback(self, torrent, peer_id, iostream):
     session = self.client.get_session(torrent)
-    if peer_id in session.peer_ids:
+    if peer_id in session.peer_ids or self.rate_limit_torrent(torrent, peer_id):
+      log.debug('[%s] dropping incoming peer %s' % (self.client.peer_id, peer_id))
       iostream.close()
       return
-    if torrent.handshake_prefix not in self.pieces:
-      self.pieces[torrent.handshake_prefix] = PieceSet(torrent.info.num_pieces)
-    peer = Peer(peer_id, iostream, self.client.get_broker(torrent))
+    peer = Peer(peer_id, iostream, self.client.get_broker(torrent), logger=self.client.log)
     peer.register_piece_receipt(functools.partial(self.piece_receipt_callback, torrent))
-    peer.register_bitfield_change(functools.partial(self.bitfield_change_callback, torrent))
+    log.debug('[%s] adding peer %s' % (self.client.peer_id, peer_id))
     session.add_peer(peer)
+    # register bitfield change callback after session's
+    peer.register_bitfield_change(functools.partial(self.notify_new_pieces, torrent))
 
-  @gen.coroutine
   def _allocate_connections(self):
     connections = []
     total_connections = sum(len(session.peer_ids) for session in self.client.sessions)
@@ -336,7 +353,8 @@ class Scheduler(object):
         if total_connections >= self.MAX_CONNECTIONS:
           return connections
         try:
-          peer_id, address = self.client.get_tracker(torrent).get_random()
+          peer_id, address = self.client.get_tracker(torrent).get_random(
+              exclude=[self.client.peer_id])
         except PeerTracker.EmptySet:
           break  # continue onto next torrent
         if peer_id == self.client.peer_id:  # do not connection to self
@@ -346,9 +364,8 @@ class Scheduler(object):
         else:
           # TODO(wickman) Does it make sense to find another?
           continue
-    raise gen.Return(connections)
+    return connections
 
-  @gen.coroutine
   def allocate_connections(self):
     """Allocate the connections for this torrent client.
 
@@ -360,110 +377,203 @@ class Scheduler(object):
        Does not disconnect any leechers, also does not provisionally connect to peers
        of finished torrents.
     """
-    connections = yield self._allocate_connections()
-    yield [gen.Task(self.client.initiate_connection, torrent, address)
-           for torrent, address in connections]
-    if self.active:
-      self.io_loop.add_timeout(self.CONNECTION_REFRESH_INTERVAL.as_(Time.SECONDS),
-          self.allocate_connections)
+    log.debug('[%s] allocating connections' % self.client.peer_id)
+    connections = self._allocate_connections()
+    log.debug('[%s] allocated %d connections.' % (self.client.peer_id, len(connections)))
+    for torrent, address in connections:
+      self.io_loop.add_callback(self.client.initiate_connection, torrent, address)
 
-  @gen.engine
-  def start(self):
-    self.active = True
+  def manage_chokes(self):
+    log.debug('[%s] managing chokes.' % self.client.peer_id)
+    # TODO(wickman) Make this smarter -- for now just unchoke everybody.
+    for session in self.client.sessions:
+      for peer in session.peers:
+        log.debug('[%s] peer [%s] status: am_choking:%s am_interested:%s peer_choking:%s peer_interested:%s' % (
+              self.client.peer_id,
+              peer,
+              peer.am_choking,
+              peer.am_interested,
+              peer.peer_choking,
+              peer.peer_interested))
+        if peer.am_choking and peer.peer_interested:
+          log.debug('[%s] unchoking interested peer %s' % (self.client.peer_id, peer.id))
+          self.io_loop.add_callback(peer.send_unchoke)
 
-    self.io_loop.add_callback(self.allocate_connections)
-    self.io_loop.add_callback(self.manage_chokes)
-
-    while self.active:
-      yield self.send_requests()
-
-  def stop(self):
-    self.active = False
-
-  def rarest_pieces(self, count=20):
-    """Return the top #count rarest pieces across all torrents."""
-
-    def iter_rarest():
-      for handshake_prefix in self.pieces:
-        torrent = self.client.get_torrent(handshake_prefix)
-        session = self.client.get_session(torrent)
-        for index in self.pieces[handshake_prefix].rarest(session.bitfield)[:count]:
-          yield (torrent, index)
-
-    rarest = list(iter_rarest())[:count]
-    random.shuffle(rarest)
-    return rarest
-
-  def owners(self, torrent, index):
-    for peer in self.client.get_session(torrent).peers:
-      if peer.bitfield[index]:
-        yield peer
-
-  @gen.engine
-  def flush_queues(self):
+  @gen.coroutine
+  def flush_requests(self):
     """
       Inspect the current aggregate ingress and egress bandwidth.
 
       Schedule ingress proportionally to egress performance and vice versa.
     """
-    MIN_OUTSTANDING_REQUESTS = 32  # - how do we enforce this?
-    MAX_OUTSTANDING_REQUESTS = 64
+    log.debug('[%s] flushing queues' % self.client.peer_id)
 
-    aggregate_ingress = sum(peer.ingress_bandwidth for peer in session.peers
-                            for session in self.client.sessions)
-    aggregate_egress = sum(peer.egress_bandwidth for peer in session.peers
-                            for session in self.client.sessions)
+    # TODO(wickman) Make this smarter, for now just always flush queues but only if
+    # we're not choked.
+    while self.active:
+      try:
+        key, peer = self.requests.pop_random()
+      except BoundedDecayingMap.Empty:
+        log.debug('[%s] No requests available, deferring.' % self.client.peer_id)
+        yield gen.Task(self.io_loop.add_timeout, self.io_loop.time() + 0.1)
+        continue
 
+      handshake_prefix, block = key
+      yield self.sent_requests.add(key, peer)
 
-  @gen.engine
-  def manage_chokes(self):
-    pass
+      log.debug('[%s] sending request %s to peer [%s].' % (
+          self.client.peer_id, block, peer))
+      yield peer.send_request(block)
 
-  @gen.engine
+  @gen.coroutine
+  def flush_receipts(self):
+    """
+      Inspect the current aggregate ingress and egress bandwidth.
+
+      Schedule ingress proportionally to egress performance and vice versa.
+    """
+    log.debug('[%s] flushing receipts' % self.client.peer_id)
+
+    # TODO(wickman) Make this smarter, for now just always flush queues but only if
+    # we're not choked.
+    while self.active:
+      try:
+        for session in self.client.sessions:
+          for peer in session.peers:
+            while True:
+              log.debug('[%s] trying to send to %s.' % (self.client.peer_id, peer))
+              piece = (yield peer.send_next_piece())
+              if not piece:
+                break
+              log.debug('[%s] sent piece %s to peer [%s].' % (self.client.peer_id, piece, peer))
+        yield gen.Task(self.io_loop.add_timeout, self.io_loop.time() + 0.1)
+      except Exception as e:
+        import traceback
+        log.error(traceback.format_exc())
+
+  @gen.coroutine
+  def rarest_pieces(self, count=20):
+    """Return the top #count rarest pieces across all torrents."""
+
+    def iter_rarest():
+      for torrent, session in self.client.iter_sessions():
+        for index in session.piece_set.rarest(session.bitfield)[:count]:
+          yield (torrent, index)
+
+    while self.active:
+      rarest = list(iter_rarest())[:count]
+      if not rarest:
+        log.debug('[%s] has no pieces to request, waiting.' % self.client.peer_id)
+        try:
+          yield self._pieces_available.wait() # (deadline=1.0)  # add a deadline to prevent deadlock
+          log.debug('[%s] now has pieces available.' % self.client.peer_id)
+          continue
+        except toro.Timeout:
+          log.debug('[%s] had no pieces available within timeout, retrying.' % self.client.peer_id)
+          continue
+      random.shuffle(rarest)
+      raise gen.Return(rarest)
+
+  def owners(self, torrent, index):
+    for peer in self.client.get_session(torrent).peers:
+      if peer.remote_bitfield[index]:
+        yield peer
+
+  @gen.coroutine
   def queue_requests(self):
     """Queue requests for most rare pieces across all sessions.
 
        Side effects:
-         self._requests is populated with requests to send.
+         self.requests is populated with requests to send.
 
          'interested' bits are set on peers who have choked us who contain
          these rare pieces.
     """
-    # XXX derp this is wrong?
-    to_queue = max(0, MAX_OUTSTANDING_REQUESTS - len(self.requests))
+    while self.active:
+      # XXX if we are choked by everyone, we need to wait until unchokes have come before
+      # we spinloop here.
+      log.debug('[%s] queueing requests.' % self.client.peer_id)
 
-    interests = []
-
-    for torrent, index in self.rarest_pieces():
-      # find owners of this piece that are not choking us or for whom we've not yet registered
-      # intent to download
-      if to_queue <= 0:
-        break
-
-      owners = [peer for peer in self.owners(torrent, index)]
-      if not owners:
-        continue
-
-      request_size = self._request_size
-      broker = self.client.get_broker(torrent)
-
-      for block in broker.iter_blocks(piece_index, request_size):
-        key = (torrent.handshake_prefix, block)
-        random_peer = random.choice(owners)
-        if self.requests.contains(key, random_peer):
+      for torrent, index in (yield self.rarest_pieces()):
+        # find owners of this piece that are not choking us or for whom we've not yet registered
+        # intent to download
+        owners = list(self.owners(torrent, index))
+        if not owners:
+          log.debug('[%s] found no owners for %s[%d]' % (self.client.peer_id, torrent, index))
           continue
-        if random_peer.local_choked:
-          if not random_peer.local_interested:
-            log.debug('Want to request %s from %s but we are choked, setting interested.' % (
-                block, random_peer))
-            interests.append(gen.Task(random_peer.send_interested))
-            owners.remove(random_peer)  # remove this peer since we're choked
-          continue
-        log.debug('Scheduler requesting %s from peer [%s].' % (block, random_peer))
-        self.requests.add(key, random_peer)
 
-        to_queue -= 1
-        if to_queue == 0:
-          break
+        request_size = self._request_size
+        broker = self.client.get_broker(torrent)
 
-    yield interests
+        for block in broker.iter_blocks(index, request_size):
+          key = (torrent.handshake_prefix, block)
+          random_peer = random.choice(owners)
+          #log.debug('[%s] queueing %s from %s' % (self.client.peer_id, block, random_peer))
+
+          if self.requests.contains(key, random_peer):
+            log.debug('[%s] already queued: %s' % (self.client.peer_id, block))
+            continue
+
+          if random_peer.peer_choking:
+            if not random_peer.am_interested:
+              log.debug('[%s] Cannot request [%s] status: am_choking:%s am_interested:%s peer_choking:%s peer_interested:%s' % (
+                self.client.peer_id,
+                random_peer,
+                random_peer.am_choking,
+                random_peer.am_interested,
+                random_peer.peer_choking,
+                random_peer.peer_interested))
+              log.debug('[%s] want to request %s from %s but we are choked, setting interested.' % (
+                  self.client.peer_id, block, random_peer.id))
+              yield gen.Task(random_peer.send_interested)
+
+              owners.remove(random_peer)  # remove this peer since we're choked
+              if not owners:
+                log.debug('[%s] No more owners of this block, breaking.' % self.client.peer_id)
+                break
+            log.debug('[%s] Cannot request [%s] status: am_choking:%s am_interested:%s peer_choking:%s peer_interested:%s' % (
+              self.client.peer_id,
+              random_peer,
+              random_peer.am_choking,
+              random_peer.am_interested,
+              random_peer.peer_choking,
+              random_peer.peer_interested))
+            continue
+
+          # TODO(wickman) Consider deferring the sem.acquire to before the piece selection
+          # in case there is a large delay and the scheduling choice would otherwise change.
+          log.debug('[%s] requesting %s from peer [%s].' % (self.client.peer_id, block, random_peer))
+          yield self.requests.add(key, random_peer)
+
+      # yield to somebody else
+      yield gen.Task(self.io_loop.add_timeout, self.io_loop.time() + 0.1)
+
+  def start(self):
+    log.debug('[%s] scheduler starting.' % self.client.peer_id)
+    self.active = True
+
+    self._allocate_connections_timer = PeriodicCallback(
+        self.allocate_connections,
+        self.CONNECTION_REFRESH_INTERVAL.as_(Time.MILLISECONDS),
+        self.io_loop)
+    self._allocate_connections_timer.start()
+
+    self._manage_chokes_timer = PeriodicCallback(
+        self.manage_chokes,
+        self.CHOKE_INTERVAL.as_(Time.MILLISECONDS),
+        self.io_loop)
+    self._manage_chokes_timer.start()
+
+    log.debug('[%s] Queued queue_requests.' % self.client.peer_id)
+    self.io_loop.add_callback(self.queue_requests)
+    log.debug('[%s] Queued flush_queues.' % self.client.peer_id)
+    self.io_loop.add_callback(self.flush_requests)
+    log.debug('[%s] Queued flush_receipts.' % self.client.peer_id)
+    self.io_loop.add_callback(self.flush_receipts)
+    log.debug('[%s] scheduler started.' % self.client.peer_id)
+
+  def stop(self):
+    assert self.active
+    self.active = False
+    self._allocate_connections_timer.stop()
+    self._manage_chokes_timer.stop()

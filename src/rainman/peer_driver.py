@@ -187,6 +187,7 @@ class PeerDriver(Interface):
   @classmethod
   def _dispatch(cls, interface, command, body):
     """Decode a command and dispatch a call to the :class:`PeerDriver` interface."""
+    log.debug('Dispatching command %s' % Command.to_string(command))
     return cls.DECODERS[command](interface, command, body)
 
   # ---- Iostream interface
@@ -252,8 +253,8 @@ class PeerDriver(Interface):
   # ---- Send interface.
   @gen.coroutine
   def send(self, command, *args):
-    log.debug('[%s] sending %s(%s)' % (
-        self, Command.to_string(command), ', '.join(map(str, args))))
+    log.debug('Sending %s(%s) to %s' % (
+        Command.to_string(command), ', '.join(map(str, args)), self))
     yield gen.Task(self.iostream.write, self._encode(command, *args))
 
   def send_keepalive(self):
@@ -278,10 +279,7 @@ class PeerDriver(Interface):
     return self.send(Command.BITFIELD, bitfield)
 
   def send_request(self, request):
-    log.debug('wat?')
-    lol = self.send(Command.REQUEST, request)
-    log.debug('lol is %s' % lol)
-    return lol
+    return self.send(Command.REQUEST, request)
 
   def send_cancel(self, request):
     return self.send(Command.CANCEL, request)

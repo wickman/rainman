@@ -49,10 +49,12 @@ class PeerTracker(dict):
   def stop(self):
     pass
 
-  def get_random(self):
+  def get_random(self, exclude=None):
+    """Get a random peer excluding anything in the exclude set."""
     if not self:  # if no elements
       raise self.EmptySet('No peers available to allocate.')
-    return random.choice(list(self.items()))
+    exclude = exclude or frozenset()
+    return random.choice([pair for pair in self.items() if pair[0] not in exclude])
 
   def __init__(self, *args, **kw):
     pass

@@ -7,7 +7,6 @@ from .fileset import Piece, Request
 from .peer_driver import PeerDriver
 
 from tornado import gen
-from twitter.common import log
 from twitter.common.quantity import Time, Amount
 
 
@@ -76,7 +75,7 @@ class Peer(PeerDriver):
   class BadMessage(Error): pass
   class PeerInactive(Error): pass
 
-  def __init__(self, peer_id, iostream, piece_broker):
+  def __init__(self, peer_id, iostream, piece_broker, logger=lambda msg: False):
     self._id = peer_id
     self._active = False
     self._piece_broker = piece_broker
@@ -87,6 +86,7 @@ class Peer(PeerDriver):
     self._request_queue = []
     self._bitfield_callbacks = []
     self._receive_callbacks = []
+    self._logger = logger
     super(Peer, self).__init__()
 
   @property
@@ -101,6 +101,10 @@ class Peer(PeerDriver):
 
   def __str__(self):
     return 'Peer(%s)' % self._id
+
+  @property
+  def remote_bitfield(self):
+    return self._bitfield
 
   @property
   def egress_bytes(self):
@@ -123,19 +127,19 @@ class Peer(PeerDriver):
     return self._id
 
   @property
-  def remote_choked(self):
+  def am_choking(self):
     return self._in.choked
 
   @property
-  def local_choked(self):
+  def peer_choking(self):
     return self._out.choked
 
   @property
-  def remote_interested(self):
+  def am_interested(self):
     return self._in.interested
 
   @property
-  def local_interested(self):
+  def peer_interested(self):
     return self._out.interested
 
   @property
@@ -157,18 +161,19 @@ class Peer(PeerDriver):
     for callback in self._receive_callbacks:
       callback(piece, full)
 
-  def activate(self):
-    self._active = True
-
   # -- runner
-  @gen.engine
+  @gen.coroutine
   def start(self):
+    self._active = True
+    self._logger('Sending bitfield to [%s]' % self._id)
     yield self.send_bitfield(self._piece_broker.bitfield)
     while self._active:
+      self._logger('Running recv from [%s]' % self._id)
       yield self.recv()
+      self._logger('Ran recv from [%s]' % self._id)
 
   def stop(self):
-    log.debug('Disconnecting from [%s]' % self._id)
+    self._logger('Disconnecting from [%s]' % self._id)
     self._active = False
     if self._iostream:
       self._iostream.close()
@@ -191,37 +196,43 @@ class Peer(PeerDriver):
 
   @gen.coroutine
   def send_interested(self):
-    if self._out.interested:  # already interested
+    if self._in.interested:  # already interested
       return
-    self._out.interested = True
+    self._in.interested = True
     yield super(Peer, self).send_interested()
 
   @gen.coroutine
   def send_not_interested(self):
-    if not self._out.interested:  # already not interested
+    if not self._in.interested:  # already not interested
       return
-    self._out.interested = False
+    self._in.interested = False
     yield super(Peer, self).send_interested()
 
   @gen.coroutine
   def send_next_piece(self):
-    if self._out.choked or not self._out.interested or not self._request_queue:
-      return
+    if not self._request_queue:
+      raise gen.Return(None)
+    if self.am_choking or not self.peer_interested:
+      self._logger('Skipping send to [%s] (am_choking:%s, peer_interested:%s)' % (
+          self._id, self.am_choking, self.peer_interested))
+      raise gen.Return(None)
     piece = self._request_queue.pop(0)
+    self._logger('Sending piece %s' % piece)
     yield self.send_piece(piece)
+    raise gen.Return(piece)
 
   @gen.coroutine
   def send_all_pieces(self):
-    if self._out.choked or not self._out.interested or not self._request_queue:
+    if self.am_choking or not self.peer_interested or not self._request_queue:
       return
     all_requests, self._request_queue = self._request_queue, []
     yield [self.send_piece(request) for request in all_requests]
 
   @gen.coroutine
   def send_piece(self, piece):
-    if not self._out.interested or self._out.choked:
-      log.debug('Skipping send of %s to [%s] (interested:%s, choked:%s)' % (
-          piece, self._id, self._out.interested, self._out.choked))
+    if self.am_choking or not self.peer_interested:
+      self._logger('Skipping send of %s to [%s] (am_choking:%s, peer_interested:%s)' % (
+          piece, self._id, self.am_choking, self.peer_interested))
       return
 
     # In case the piece is actually an unpopulated request, populate.
@@ -240,31 +251,31 @@ class Peer(PeerDriver):
 
   @gen.coroutine
   def choke(self):
-    log.debug('Peer [%s] choking us.' % self._id)
+    self._logger('Peer [%s] choking us.' % self._id)
     self._in.ping()
     self._out.choked = True
 
   @gen.coroutine
   def unchoke(self):
-    log.debug('Peer [%s] unchoking us.' % self._id)
+    self._logger('Peer [%s] unchoking us.' % self._id)
     self._in.ping()
     self._out.choked = False
 
   @gen.coroutine
   def interested(self):
-    log.debug('Peer [%s] interested.' % self._id)
-    self._in.interested = True
+    self._logger('Peer [%s] interested.' % self._id)
+    self._out.interested = True
 
   @gen.coroutine
   def not_interested(self):
-    log.debug('Peer [%s] uninterested.' % self._id)
-    self._in.interested = False
+    self._logger('Peer [%s] uninterested.' % self._id)
+    self._out.interested = False
 
   @gen.coroutine
   def have(self, index):
     self._bitfield[index] = True
     self._in.ping()
-    log.debug('Peer [%s] has piece %s.' % (self._id, index))
+    self._logger('Peer [%s] has piece %s.' % (self._id, index))
     self._invoke_bitfield_change([index], [])
 
   @gen.coroutine
@@ -279,7 +290,7 @@ class Peer(PeerDriver):
       if new and not old:
         haves.append(index)
     self._bitfield = bitfield
-    log.debug('Peer [%s] now has %d/%d pieces.' % (
+    self._logger('Peer [%s] now has %d/%d pieces.' % (
         self._id,
         sum((self._bitfield[k] for k in range(len(self._bitfield))), 0),
         len(self._bitfield)))
@@ -287,22 +298,22 @@ class Peer(PeerDriver):
 
   @gen.coroutine
   def request(self, request):
-    log.debug('Peer [%s] requested %s' % (self._id, request))
+    self._logger('Peer [%s] requested %s' % (self._id, request))
     self._in.ping()
     if self._piece_broker.covers(request):
-      log.debug('   => we have %s, queueing request.' % request)
+      self._logger('   => we have %s, queueing request.' % request)
       self._request_queue.append(request)
     else:
-      log.debug('   => do not have %s, ignoring.' % request)
+      self._logger('   => do not have %s, ignoring.' % request)
 
   @gen.coroutine
   def cancel(self, request):
-    log.debug('Peer [%s] canceling %s' % (self._id, request))
+    self._logger('Peer [%s] canceling %s' % (self._id, request))
     self._request_queue = [r for r in self._request_queue if r != request]
     self._in.ping()
 
   @gen.coroutine
   def piece(self, piece):
-    log.debug('Received %s from [%s]' % (piece, self._id))
+    self._logger('Received %s from [%s]' % (piece, self._id))
     self._in.sent(piece.length)
     self._invoke_piece_receipt(piece, (yield gen.Task(self._piece_broker.write, piece)))

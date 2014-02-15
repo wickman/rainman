@@ -55,5 +55,10 @@ class Bitfield(object):
     else:
       self._array[byte_index] &= (~(1 << bit_index) % 256)
 
+  def __contains__(self, index):
+    if index >= len(self):
+      return False
+    return self[index]
+
   def __len__(self):
     return self._length

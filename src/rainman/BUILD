@@ -1,4 +1,5 @@
 python_requirement('tornado>=3')
+python_requirement('toro==0.5')
 
 python_library(
   name = 'rainman',
@@ -11,6 +12,7 @@ python_library(
     python_requirement('twitter.common.log'),
     python_requirement('twitter.common.quantity'),
     pants(':tornado'),
+    pants(':toro'),
   ],
   provides = setup_py(
     name = 'rainman',

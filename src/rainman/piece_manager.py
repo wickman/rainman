@@ -21,6 +21,7 @@ from twitter.common.dirutil import (
     safe_size,
 )
 from twitter.common import log
+from twitter.common.lang import Compatibility
 
 
 class PieceManager(object):
@@ -169,6 +170,10 @@ class PieceManager(object):
   def iter_blocks(self, index, block_size):
     """yield :class:`Request` objects for the piece at index with a given block size
        that are not yet part of the sliceset."""
+    if not isinstance(index, Compatibility.integer):
+      raise TypeError('iter_blocks requires index to be an integer.')
+    if not isinstance(block_size, Compatibility.integer):
+      raise TypeError('iter_blocks requires block_size to be an integer.')
     piece_size = self.piece_size(index)
     for start_offset in range(0, piece_size, block_size):
       request = Request(

@@ -10,11 +10,8 @@ from rainman.peer_id import PeerId
 from rainman.torrent import Torrent
 
 from tornado import gen
-from tornado.testing import (
-    AsyncTestCase,
-    bind_unused_port,
-    gen_test,
-)
+from tornado.ioloop import IOLoop
+from tornado.testing import bind_unused_port
 from twitter.common.dirutil import safe_mkdtemp, safe_open
 from twitter.common.quantity import Amount, Data, Time
 
@@ -50,7 +47,7 @@ def random_stream(N):
 def make_ensemble(io_loop,
                   num_seeders=1,
                   num_leechers=1,
-                  piece_size=256,
+                  piece_size=64,
                   seed=31337,
                   scheduler_impl=Scheduler):
   root = safe_mkdtemp()
@@ -104,51 +101,21 @@ def make_ensemble(io_loop,
   return torrent, seeder_clients, leecher_clients
 
 
-class TestIntegration(AsyncTestCase):
-  @gen_test
-  def test_single_seeder_single_leecher(self):
-    torrent, seeders, leechers = make_ensemble(self.io_loop, num_seeders=1, num_leechers=1)
-    seeder = seeders[0]
-    leecher = leechers[0]
+def run(io_loop):
+  torrent, seeders, leechers = make_ensemble(
+      io_loop,
+      num_seeders=1,
+      num_leechers=1,
+      scheduler_impl=FastScheduler)
+  seeder_scheduler, seeder = seeders[0], seeders[0].client
+  leecher_scheduler, leecher = leechers[0], leechers[0].client
 
-    # check connection initiation
-    assert torrent.handshake_prefix not in seeder.pieces
-    assert torrent.handshake_prefix not in leecher.pieces
-    yield gen.Task(leecher.client.initiate_connection,
-        torrent, ('127.0.0.1', seeder.client.port))
-    assert torrent.handshake_prefix in seeder.pieces
-    assert torrent.handshake_prefix in leecher.pieces
+  # run the torrent!
+  leecher.get_session(torrent).register_done_callback(io_loop.stop)
+  leecher_scheduler.start()
+  seeder_scheduler.start()
 
-    # check client peer tracker is populated
-    peer_tracker = seeder.client.get_tracker(torrent)
-    assert peer_tracker
 
-  @gen_test
-  def test_allocate_connections(self):
-    torrent, seeders, leechers = make_ensemble(self.io_loop, num_seeders=1, num_leechers=1)
-    seeder_scheduler, seeder = seeders[0], seeders[0].client
-    leecher_scheduler, leecher = leechers[0], leechers[0].client
-
-    # check connection alocation
-    connections = yield seeder_scheduler._allocate_connections()
-    assert connections == []
-    connections = yield leecher_scheduler._allocate_connections()
-    assert connections == [(torrent, ('127.0.0.1', seeder.port))]
-
-  @gen_test
-  def test_integrate(self):
-    torrent, seeders, leechers = make_ensemble(
-        self.io_loop,
-        num_seeders=1,
-        num_leechers=1,
-        scheduler_impl=FastScheduler)
-    seeder_scheduler, seeder = seeders[0], seeders[0].client
-    leecher_scheduler, leecher = leechers[0], leechers[0].client
-
-    # run the torrent!
-    leecher.get_session(torrent).register_done_callback(self.stop)
-    leecher_scheduler.start()
-    seeder_scheduler.start()
-
-    # This test can take a while
-    self.wait(timeout=20)
+io_loop = IOLoop.instance()
+run(io_loop)
+io_loop.start()

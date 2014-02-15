@@ -72,9 +72,9 @@ class TimeDecayMap(object):
     return [peer for _, peer in self._elements[key]]
 
   def __len__(self):
-    return len(list(self))
+    return len(list(iter(self)))
 
-  def __iter__(self, key):
+  def __iter__(self):
     now = self._clock.time()
     for key, element_list in self._elements:
       old_size = len(element_list)
@@ -84,6 +84,8 @@ class TimeDecayMap(object):
       self._outstanding -= old_size - len(element_list)
       for _, peer_id in element_list:
         yield key, peer_id
+
+
 
 
 """

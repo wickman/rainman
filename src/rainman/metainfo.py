@@ -79,7 +79,9 @@ class MetaInfoBuilder(object):
 
     def relpath(filename):
       if self._relpath is None:
+        log.info('Metainfo: %s' % filename)
         return filename
+      log.info('Metainfo: %s' % os.path.relpath(filename, self._relpath))
       return os.path.relpath(filename, self._relpath)
 
     if len(self._fileset) == 1:
@@ -87,9 +89,10 @@ class MetaInfoBuilder(object):
       fileset_name, _ = iter(self._fileset).next()
       d.update(
           length=self._fileset.size,
-          name=relpath(os.path.basename(fileset_name)).encode(self.ENCODING))
+          name=os.path.basename(fileset_name).encode(self.ENCODING))
     else:
       def encode_filename(filename):
+        log.info('Encoding filename: %s' % filename)
         return [sp.encode(self.ENCODING) for sp in relpath(filename).split(os.path.sep)]
       d['files'] = [{'length': filesize, 'path': encode_filename(filename)}
                     for filename, filesize in self._fileset]

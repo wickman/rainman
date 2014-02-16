@@ -29,6 +29,9 @@ class FakeSession(object):
     self.peer_id, self.iostream = None, None
     self.peer_ids = []
 
+  def start(self):
+    pass
+
   def add_peer(self, peer):
     self.peer_ids.append(peer.id)
     self.peer_id = peer.id

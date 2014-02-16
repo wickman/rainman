@@ -6,7 +6,7 @@ from rainman.fileset import FileSet
 from rainman.request import Piece, Request
 from rainman.piece_broker import PieceBroker
 from rainman.piece_manager import PieceManager
-from rainman.testing import make_fileset
+from rainman.testing import make_metainfo
 
 from tornado import gen
 from tornado.testing import AsyncTestCase, gen_test
@@ -14,21 +14,26 @@ from twitter.common.contextutil import temporary_dir
 from twitter.common.dirutil import safe_mkdtemp
 
 
-class TestPieceBroker(AsyncTestCase):
+from twitter.common import log
+from twitter.common.log.options import LogOptions
+LogOptions.set_disk_log_level('NONE')
+LogOptions.set_stderr_log_level('google:DEBUG')
+log.init('derp')
 
+
+class TestPieceBroker(AsyncTestCase):
   @gen_test
   def test_main(self):
     piece_size = 4
     filelist = (('a.txt', b'hello'), ('b.txt', b'world'), ('c.txt', b'hello world'))
-    with make_fileset(filelist, piece_size) as (td, fs):
+    with make_metainfo(filelist, piece_size) as (td, fs, metainfo):
       size = fs.size
 
       pm = PieceManager(fs, chroot=td)
       pm.initialize()
       pb1 = PieceBroker(fs, chroot=td, piece_hashes=list(pm.iter_hashes()), io_loop=self.io_loop)
       pb1.initialize()
-      pb2 = PieceBroker(
-          fs, chroot=safe_mkdtemp(), piece_hashes=list(pm.iter_hashes()), io_loop=self.io_loop)
+      pb2 = PieceBroker.from_metainfo(metainfo, chroot=safe_mkdtemp(), io_loop=self.io_loop)
       pb2.initialize()
 
       # make sure pb1 is complete and pb2 is not

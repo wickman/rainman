@@ -117,20 +117,15 @@ class TestIntegration(AsyncTestCase):
   @gen_test
   def test_single_seeder_single_leecher(self):
     torrent, seeders, leechers = make_ensemble(self.io_loop, num_seeders=1, num_leechers=1)
-    seeder = seeders[0]
-    leecher = leechers[0]
+    seeder = seeders[0].client
+    leecher = leechers[0].client
 
     # check connection initiation
-    assert torrent.handshake_prefix not in seeder.pieces
-    assert torrent.handshake_prefix not in leecher.pieces
-    yield gen.Task(leecher.client.initiate_connection,
-        torrent, ('127.0.0.1', seeder.client.port))
-    assert torrent.handshake_prefix in seeder.pieces
-    assert torrent.handshake_prefix in leecher.pieces
-
-    # check client peer tracker is populated
-    peer_tracker = seeder.client.get_tracker(torrent)
-    assert peer_tracker
+    assert seeder.peer_id not in leecher.get_session(torrent).peer_ids
+    assert leecher.peer_id not in seeder.get_session(torrent).peer_ids
+    yield gen.Task(leecher.initiate_connection, torrent, ('127.0.0.1', seeder.port))
+    assert seeder.peer_id in leecher.get_session(torrent).peer_ids
+    assert leecher.peer_id in seeder.get_session(torrent).peer_ids
 
   @gen_test
   def test_allocate_connections(self):
@@ -139,9 +134,9 @@ class TestIntegration(AsyncTestCase):
     leecher_scheduler, leecher = leechers[0], leechers[0].client
 
     # check connection alocation
-    connections = yield seeder_scheduler._allocate_connections()
+    connections = seeder_scheduler._allocate_connections()
     assert connections == []
-    connections = yield leecher_scheduler._allocate_connections()
+    connections = leecher_scheduler._allocate_connections()
     assert connections == [(torrent, ('127.0.0.1', seeder.port))]
 
   @gen_test
@@ -150,7 +145,8 @@ class TestIntegration(AsyncTestCase):
         self.io_loop,
         num_seeders=1,
         num_leechers=1,
-        scheduler_impl=FastScheduler)
+        scheduler_impl=FastScheduler,
+        slice_impl=memslice)
     seeder_scheduler, seeder = seeders[0], seeders[0].client
     leecher_scheduler, leecher = leechers[0], leechers[0].client
 

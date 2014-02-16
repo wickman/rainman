@@ -170,24 +170,6 @@ class PieceManager(object):
       yield b''.join(slice_.rooted_at(self._chroot).read()
                      for slice_ in self._fileset.iter_slices(request))
 
-  """
-  def iter_pieces(self):
-    # TODO(wickman)  Port this over to use the fileslice interface.
-    chunk = ''
-    for fn, _ in self._fileset:
-      with open(os.path.join(self._chroot, fn), 'rb') as fp:
-        while True:
-          addendum = fp.read(self._fileset.piece_size - len(chunk))
-          chunk += addendum
-          if len(chunk) == self._fileset.piece_size:
-            yield chunk
-            chunk = ''
-          if len(addendum) == 0:
-            break
-    if len(chunk) > 0:
-      yield chunk
-  """
-
   def iter_hashes(self):
     """iterate over the sha1 hashes, blocking."""
     for index, chunk in enumerate(self.iter_pieces()):

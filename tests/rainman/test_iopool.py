@@ -1,6 +1,7 @@
 from tornado.testing import AsyncTestCase
 
-from rainman.fileset import FileSet, Piece, Request
+from rainman.fileset import FileSet
+from rainman.request import Request, Piece
 from rainman.piece_broker import PieceBroker
 
 

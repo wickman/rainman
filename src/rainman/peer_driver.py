@@ -33,7 +33,7 @@ from abc import abstractmethod, abstractproperty
 import struct
 
 from .bitfield import Bitfield
-from .fileset import Piece, Request
+from .request import Piece, Request
 
 from tornado import gen
 from twitter.common import log
@@ -187,7 +187,7 @@ class PeerDriver(Interface):
   @classmethod
   def _dispatch(cls, interface, command, body):
     """Decode a command and dispatch a call to the :class:`PeerDriver` interface."""
-    #log.debug('Dispatching command %s' % Command.to_string(command))
+    log.debug('Dispatching command %s' % Command.to_string(command))
     return cls.DECODERS[command](interface, command, body)
 
   # ---- Iostream interface
@@ -251,8 +251,9 @@ class PeerDriver(Interface):
   # ---- Send interface.
   @gen.coroutine
   def send(self, command, *args):
-    #log.debug('Sending %s(%s) to %s' % (
-    #    Command.to_string(command), ', '.join(map(str, args)), self))
+    # TODO(wickman) Put this behind a verbosity flag.
+    log.debug('Sending %s(%s) to %s' % (
+        Command.to_string(command), ', '.join(map(str, args)), self))
     yield gen.Task(self.iostream.write, self._encode(command, *args))
 
   def send_keepalive(self):

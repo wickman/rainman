@@ -1,6 +1,6 @@
 import hashlib
 
-from .codec import BEncoder, BDecoder
+from .codec import BDecoder, BEncoder
 from .metainfo import MetaInfo
 from .handshake import PeerHandshake
 

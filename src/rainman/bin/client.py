@@ -2,7 +2,7 @@ import code
 import time
 
 from rainman.metainfo import Torrent
-from rainman.session import Session, PeerSet
+from rainman.session import Session
 
 from twitter.common import app
 

@@ -3,7 +3,11 @@ import math
 import os
 import struct
 
+from .request import Request
+
 from twitter.common.lang import Compatibility
+from twitter.common import log
+from twitter.common.dirutil import touch
 
 
 class SliceBase(object):
@@ -42,9 +46,16 @@ class SliceBase(object):
     return None
 
   def read(self):
+    """Read the data composing this slice."""
     raise NotImplemented
 
   def write(self, data):
+    """Read write the data in `data` to this slice.  `data` must be the correct size."""
+    raise NotImplemented
+
+  def fill(self):
+    """Fill the slice with sentinel data if the slice is empty. Returns truthy if anything
+       was filled, falsy if nothing was touched."""
     raise NotImplemented
 
   def __repr__(self):
@@ -54,8 +65,18 @@ class SliceBase(object):
 class fileslice(SliceBase):
   """A :class:`slice` over a real file."""
   def read(self):
+    """
     with open(self._filename, 'rb') as fp:
       fp.seek(self.start)
+      log.debug('%s reading.' % self)
+      data = fp.read(self.length)
+      if len(data) != self.length:
+        raise self.ReadError('File is truncated at this slice!')
+      return data
+    """
+    with open(self._filename, 'rb') as fp:
+      fp.seek(self.start)
+      log.debug('%s reading.' % self)
       data = fp.read(self.length)
       if len(data) != self.length:
         raise self.ReadError('File is truncated at this slice!')
@@ -65,82 +86,69 @@ class fileslice(SliceBase):
     if len(data) != (self.stop - self.start):
       raise self.WriteError('Block must be of appropriate size!')
     with open(self._filename, 'r+b') as fp:
+      log.debug('%s writing.' % self)
       fp.seek(self.start)
       fp.write(data)
+    assert self.read() == data
+
+  def fill(self):
+    if self.length == 0:
+      return False
+    touch(self._filename)
+    with open(self._filename, 'r+b') as fp:
+      if os.path.getsize(self._filename) < self.stop:
+        log.debug('%s filling.' % self)
+        fp.seek(self.stop - 1, 0)
+        # write a sentinel byte which will fill the file at least up to stop.
+        fp.write(b'\x00')
+        return True
+    return False
 
 
-"""
-#TODO(wickman) Implement for tests.
 class memslice(SliceBase):
   _FAKE_FS = {}
 
   def read(self):
-    with open(self._filename, 'rb') as fp:
-      fp.seek(self.start)
-      data = fp.read(self.length)
-      if len(data) != self.length:
-        raise self.ReadError('File is truncated at this slice!')
-      log.debug('%s read %d bytes [%s]' % (self, self.length, data))
-      return data
+    if self._filename not in self._FAKE_FS:
+      raise self.ReadError('File does not exist!')
+    data = self._FAKE_FS[self._filename]
+    if len(data) < self.stop:
+      raise self.ReadError('File not long enough!')
+    return bytes(data[self.start:self.stop])
 
-  def write(self, data, into=None):
-    into = into or self.filename
-    log.debug('%s writing %d bytes into %s' % (self, len(data), data, into))
-    if len(data) != (self.stop - self.start):
+  def write(self, blob):
+    if len(blob) != (self.stop - self.start):
       raise self.WriteError('Block must be of appropriate size!')
-    with open(into, 'r+b') as fp:
-      fp.seek(self.start)
-      fp.write(data)
-"""
+    if self._filename not in self._FAKE_FS:
+      raise self.WriteError('File does not exist!')
+    data = self._FAKE_FS[self._filename]
+    if len(data) < self.start:
+      data.extend(bytearray(self.start - len(data)))
+    data[self.start:self.stop] = blob
 
-
-class Request(object):
-  __slots__ = ('index', 'offset', 'length')
-
-  def __init__(self, index, offset, length):
-    self.index = index
-    self.offset = offset
-    self.length = length
-
-  def __hash__(self):
-    return hash((self.index, self.offset, self.length))
-
-  def __str__(self):
-    return 'Request(%s[%s:%s])' % (self.index, self.offset, self.offset + self.length)
-
-  def __eq__(self, other):
-    return (self.index == other.index and
-            self.offset == other.offset and
-            self.length == other.length)
-
-
-class Piece(Request):
-  __slots__ = ('block',)
-
-  def __init__(self, index, offset, length, block):
-    super(Piece, self).__init__(index, offset, length)
-    self.block = block
-
-  def to_request(self):
-    return Request(self.index, self.offset, self.length)
-
-  def __eq__(self, other):
-    if not isinstance(other, Piece):
-      return False
-    return super(Piece, self).__eq__(other) and self.block == other.block
-
-  def __str__(self):
-    return 'Piece(%s[%s:%s]*)' % (self.index, self.offset, self.offset + self.length)
+  def fill(self):
+    if self._filename not in self._FAKE_FS:
+      self._FAKE_FS[self._filename] = bytearray(self.stop)
+      return True
+    else:
+      data = self._FAKE_FS[self._filename]
+      if self.stop < len(data):
+        return False
+      data.extend(bytearray(self.stop - len(data)))
+      return True
 
 
 class FileSet(object):
   """A logical concatenation of files, chunked into chunk sizes."""
 
   @classmethod
-  def from_metainfo(cls, metainfo):
-    return cls([(mif.name, mif.length) for mif in metainfo.files], metainfo.piece_size)
+  def from_metainfo(cls, metainfo, **kw):
+    return cls(
+        [(mif.name, mif.length) for mif in metainfo.files],
+        metainfo.piece_size,
+        **kw)
 
-  def __init__(self, files, piece_size):
+  def __init__(self, files, piece_size, slice_impl=fileslice):
     """:param files: Ordered list of (filename, filesize) tuples.
        :param piece_size: Size of pieces in bytes.
     """
@@ -163,6 +171,7 @@ class FileSet(object):
     self._files = files
     self._piece_size = piece_size
     self._size = sum(pr[1] for pr in self._files)
+    self._slice_impl = slice_impl
 
   @property
   def size(self):
@@ -181,10 +190,14 @@ class FileSet(object):
     """a sha hash uniquely representing the filename,filesize pair list."""
     return self._hash
 
+  def iter_files(self):
+    for filename, filesize in self._files:
+      yield self._slice_impl(filename, slice(0, filesize))
+
   def iter_slices(self, request):
     """
-      Given (piece index, begin, length), return an iterator over fileslice objects
-      that cover the interval.
+      Given a Request, return an iterator over fileslice objects that cover
+      the Request interval.
     """
     piece = slice(request.index * self._piece_size + request.offset,
                   request.index * self._piece_size + request.offset + request.length)
@@ -198,8 +211,18 @@ class FileSet(object):
       file = slice(offset, offset + fs)
       overlap = slice(max(file.start, piece.start), min(file.stop, piece.stop))
       if overlap.start < overlap.stop:
-        yield fileslice(fn, slice(overlap.start - offset, overlap.stop - offset))
+        yield self._slice_impl(fn, slice(overlap.start - offset, overlap.stop - offset))
       offset += fs
+
+  def iter_chunks(self):
+    total_size = self.size
+    for k in range(self.num_pieces):
+      request = Request(k, 0, min(self.piece_size, total_size))
+      yield b''.join(slice_.read() for slice_ in self.iter_slices(request))
+      total_size -= request.length
 
   def __iter__(self):
     return iter(self._files)
+
+  def __len__(self):
+    return len(self._files)

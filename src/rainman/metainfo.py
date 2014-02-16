@@ -1,11 +1,11 @@
-import errno
+import binascii
 import hashlib
 import math
 import os
 
-from .codec import BEncoder, BDecoder
+from .codec import BEncoder
 
-from twitter.common.collections import OrderedSet
+from twitter.common import log
 from twitter.common.quantity import Amount, Data
 
 
@@ -35,20 +35,8 @@ class MetaInfoFile(object):
     return 'MetaInfoFile(%r, %r, %r)' % (self._name, self._start, self._end)
 
 
-# TODO(wickman)  Call the appropriate parts of Fileset here instead of
-# cargo-culting iter_chunks.
-#
-# TODO(wickman) Ugh this shit is garbage.
 class MetaInfoBuilder(object):
-  """
-    Helper class for constructing MetaInfo objects.
-
-    builder = MetaInfoBuilder('my_package')
-    for fn in os.listdir('.'):
-      builder.add(fn)
-    metainfo = builder.build()
-  """
-
+  """Helper class for constructing MetaInfo objects."""
   class Error(Exception): pass
   class FileNotFound(Error): pass
   class EmptyInfo(Error): pass
@@ -57,26 +45,6 @@ class MetaInfoBuilder(object):
   MIN_CHUNK_SIZE = Amount(64, Data.KB)
   MAX_CHUNK_SIZE = Amount(1, Data.MB)
   DEFAULT_CHUNKS = 256
-
-  def __init__(self, name=None):
-    self._name = name
-    self._files = OrderedSet()
-    self._stats = {}
-
-  def add(self, filename, as_filename=None):
-    as_filename = as_filename or filename
-    try:
-      stat = os.stat(filename)
-    except OSError as e:
-      if e.errno == errno.ENOENT:
-        raise self.FileNotFound("Could not find %s" % filename)
-      raise
-    self._files.add(filename)
-    self._stats[filename] = (stat.st_size, as_filename)
-
-  def remove(self, filename):
-    self._files.discard(filename)
-    self._stats.pop(filename)
 
   @classmethod
   def choose_size(cls, total_size):
@@ -87,41 +55,45 @@ class MetaInfoBuilder(object):
       return int(cls.MAX_CHUNK_SIZE.as_(Data.BYTES))
     return chunksize
 
+  def __init__(self, fileset, relpath=None, name=None):
+    self._name = name
+    self._fileset = fileset
+    self._relpath = relpath
+
+  def _iter_hashes(self):
+    for index, chunk in enumerate(self._fileset.iter_chunks()):
+      digest = hashlib.sha1(chunk).digest()
+      log.debug('MetaInfoBuilder %d = %s' % (index, binascii.hexlify(digest)))
+      yield digest
+
   def build(self, piece_size=None):
-    if len(self._files) == 0:
+    if len(self._fileset) == 0:
       raise self.EmptyInfo("No files in metainfo!")
-    total_size = sum(value[0] for value in self._stats.values())
-    piece_size = piece_size or self.choose_size(total_size)
+    piece_size = piece_size or self.choose_size(self._fileset.size)
     d = {
-      'pieces': ''.join(hashlib.sha1(chunk).digest() for chunk in self.iter_chunks(piece_size)),
+      'pieces': b''.join(self._iter_hashes()),
       'piece length': piece_size
     }
     if self._name:
       d['name'] = self._name
-    if len(self._files) == 1:
-      d.update(length=sum(self._stats[fn][0] for fn in self._files),
-               name=os.path.basename(self._stats[iter(self._files).next()][1]))  # waa?
+
+    def relpath(filename):
+      if self._relpath is None:
+        return filename
+      return os.path.relpath(filename, self._relpath)
+
+    if len(self._fileset) == 1:
+      # special-case for single-file
+      fileset_name, _ = iter(self._fileset).next()
+      d.update(
+          length=self._fileset.size,
+          name=relpath(os.path.basename(fileset_name)).encode(self.ENCODING))
     else:
       def encode_filename(filename):
-        return [sp.encode(self.ENCODING) for sp in filename.split(os.path.sep)]
-      d['files'] = [{'length': self._stats[fn][0], 'path': encode_filename(self._stats[fn][1])}
-                    for fn in self._files]
+        return [sp.encode(self.ENCODING) for sp in relpath(filename).split(os.path.sep)]
+      d['files'] = [{'length': filesize, 'path': encode_filename(filename)}
+                    for filename, filesize in self._fileset]
     return MetaInfo(d)
-
-  def iter_chunks(self, chunksize):
-    chunk = ''
-    for fn in self._files:
-      with open(fn, 'rb') as fp:
-        while True:
-          addendum = fp.read(chunksize - len(chunk))
-          chunk += addendum
-          if len(chunk) == chunksize:
-            yield chunk
-            chunk = ''
-          if len(addendum) == 0:
-            break
-    if len(chunk) > 0:
-      yield chunk
 
 
 class MetaInfo(object):

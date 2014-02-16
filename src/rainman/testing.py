@@ -17,17 +17,16 @@ def make_fileset(filelist, piece_size):
     for filename, contents in filelist:
       with open(os.path.join(td, filename), 'wb') as fp:
         fp.write(contents)
-    filelist = [(filename, len(contents)) for (filename, contents) in filelist]
+    filelist = [(os.path.join(td, filename), len(contents))
+                for (filename, contents) in filelist]
     yield td, FileSet(filelist, piece_size)
 
 
 @contextmanager
 def make_metainfo(filelist, piece_size):
   with make_fileset(filelist, piece_size) as (td, fs):
-    mib = MetaInfoBuilder()
-    for filename, _ in filelist:
-      mib.add(os.path.join(td, filename), filename)
-    yield td, fs, mib.build()
+    mib = MetaInfoBuilder(fs, relpath=td)
+    yield td, fs, mib.build(piece_size)
 
 
 @contextmanager

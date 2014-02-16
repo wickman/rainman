@@ -1,14 +1,10 @@
-import datetime
 import functools
-import random
 
-from .peer import Peer
 from .piece_set import PieceSet
 
-from tornado import gen
 import tornado.ioloop
 from twitter.common import log
-from twitter.common.quantity import Amount, Data, Time
+from twitter.common.quantity import Amount, Time
 
 
 class Session(object):
@@ -97,15 +93,14 @@ class Session(object):
       if peer and (peer.iostream.closed() or not peer.is_healthy):
         log.debug('Garbage collecting peer [%s]' % peer_id)
         dead.add(peer_id)
-        self._piece_set.remove(peer.remote_bitfield)
+        self.piece_set.remove(peer.remote_bitfield)
     for peer_id in dead:
       log.debug('Popping peer %s in filter_dead_connections' % repr(peer_id))
       peer = self._peers.pop(peer_id)
-      peer.disconnect()
+      peer.iostream.close()
       self._dead.append(peer_id)
 
   def _broadcast_new_pieces(self):
-    receipts = []
     for piece, finished in self._queued_receipts:
       if finished:
         for peer in self._peers.values():

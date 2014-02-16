@@ -1,5 +1,5 @@
 from rainman.bitfield import Bitfield
-from rainman.fileset import Piece, Request
+from rainman.request import Piece, Request
 from rainman.peer_driver import Command, PeerDriver
 
 from tornado import gen

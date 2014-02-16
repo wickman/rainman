@@ -1,11 +1,7 @@
 import hashlib
 
 from .bitfield import Bitfield
-from .fileset import (
-    fileslice,
-    Piece,
-    Request,
-)
+from .request import Piece, Request
 from .iopool import IOPool
 from .piece_manager import PieceManager
 
@@ -44,7 +40,7 @@ class PieceBroker(PieceManager):
 
     slices = list(self._fileset.iter_slices(request))
     read_slices = yield [
-        gen.Task(self._iopool.add, fileslice.read, slice_.rooted_at(self._chroot))
+        gen.Task(self._iopool.add, slice_.rooted_at(self._chroot).read)
         for slice_ in slices]
     callback(b''.join(read_slices))
 
@@ -67,7 +63,7 @@ class PieceBroker(PieceManager):
     offset = 0
     for slice_ in self._fileset.iter_slices(piece):
       slices.append(
-          gen.Task(self._iopool.add, fileslice.write, slice_.rooted_at(self._chroot),
+          gen.Task(self._iopool.add, slice_.rooted_at(self._chroot).write,
                    piece.block[offset:offset + slice_.length]))
       offset += slice_.length
     yield slices

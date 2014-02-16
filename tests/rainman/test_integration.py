@@ -4,7 +4,7 @@ import os
 import random
 
 from rainman.client import Client, Scheduler
-from rainman.fileset import FileSet
+from rainman.fileset import FileSet, fileslice, memslice
 from rainman.metainfo import MetaInfoBuilder
 from rainman.peer_id import PeerId
 from rainman.torrent import Torrent
@@ -15,7 +15,7 @@ from tornado.testing import (
     bind_unused_port,
     gen_test,
 )
-from twitter.common.dirutil import safe_mkdtemp, safe_open
+from twitter.common.dirutil import safe_mkdtemp, safe_open, safe_mkdir
 from twitter.common.quantity import Amount, Data, Time
 
 
@@ -28,10 +28,10 @@ log.init('derp')
 
 
 class SocketClient(Client):
-  def __init__(self, sock, port, io_loop, peer_id=None):
+  def __init__(self, sock, port, io_loop, peer_id=None, **kw):
     self.__sock = sock
     self.__port = port
-    super(SocketClient, self).__init__(peer_id or PeerId.generate(), io_loop=io_loop)
+    super(SocketClient, self).__init__(peer_id or PeerId.generate(), io_loop=io_loop, **kw)
 
   def listen(self):
     self._port = self.__port
@@ -43,16 +43,21 @@ class FastScheduler(Scheduler):
   CHOKE_INTERVAL = Amount(250, Time.MILLISECONDS)
 
 
+
 def random_stream(N):
-  return bytearray((random.getrandbits(8) for _ in range(N)))
+  # return bytearray((random.getrandbits(8) for _ in range(N)))
+  return os.urandom(N)
 
 
 def make_ensemble(io_loop,
                   num_seeders=1,
                   num_leechers=1,
-                  piece_size=256,
+                  piece_size=16384,
+                  max_filesize=32768,
+                  total_filesize=1048576,
                   seed=31337,
-                  scheduler_impl=Scheduler):
+                  scheduler_impl=Scheduler,
+                  slice_impl=fileslice):
   root = safe_mkdtemp()
 
   seeder_sockets = [(PeerId.generate(), bind_unused_port()) for _ in range(num_seeders)]
@@ -60,48 +65,52 @@ def make_ensemble(io_loop,
   tracker_info = os.path.join(root, 'tracker_info.txt')
   with open(tracker_info, 'w') as fp:
     for peer_id, (_, port) in seeder_sockets + leecher_sockets:
-      print('Writing %s 127.0.0.1 %d to tracker_info.txt' % (peer_id, port))
       print('%s 127.0.0.1 %d' % (peer_id, port), file=fp)
   tracker_info = 'file://' + tracker_info
 
   random.seed(seed)
   filelist = []
-  mib = MetaInfoBuilder()
-  for name in ('a', 'b', 'c', 'd'):
-    content = random_stream(random.randrange(0, 4096))
-    filelist.append((name, len(content)))
+  files = 0
+  while total_filesize > 0:
+    filesize = min(total_filesize, random.randrange(0, max_filesize))
+    total_filesize -= filesize
+    filename = '%x.txt' % files
+    filelist.append((os.path.join(root, 'dataset', filename), filesize))
+    content = random_stream(filesize)
     for replica in ['dataset'] + ['seeder%d' % k for k in range(num_seeders)]:
-      real_path = os.path.join(root, replica, name)
-      with safe_open(real_path, 'wb') as fp:
-        fp.write(content)
-    mib.add(real_path, name)  # do this once
+      safe_mkdir(os.path.join(root, replica))
+      real_path = os.path.join(root, replica, filename)
+      slice_ = slice_impl(real_path, slice(0, filesize))
+      slice_.fill()
+      slice_.write(content)
+    files += 1
+
+  fs = FileSet(filelist, piece_size, slice_impl=slice_impl)
+  mib = MetaInfoBuilder(fs, relpath=os.path.join(root, 'dataset'))
 
   torrent = Torrent()
   torrent.info = mib.build(piece_size)
   torrent.announce = tracker_info
 
-  fs = FileSet(filelist, piece_size)
-
   seeder_clients = []
   leecher_clients = []
 
-  for peer_id, (listener, port) in seeder_sockets:
-    client = SocketClient(listener, port, io_loop, peer_id)
+  def make_peer(peer_id, listener, port, chroot):
+    client = SocketClient(listener, port, io_loop, peer_id, slice_impl=slice_impl)
     scheduler = scheduler_impl(client, request_size=Amount(piece_size/4, Data.BYTES))
     client.listen()
-    client.register_torrent(torrent, root=os.path.join(root, 'seeder%d' % k))
-    assert client.get_session(torrent).remaining_bytes == 0
-    seeder_clients.append(scheduler)
+    client.register_torrent(torrent, root=chroot)
+    return scheduler
 
-  for peer_id, (listener, port) in leecher_sockets:
-    client = SocketClient(listener, port, io_loop, peer_id)
-    scheduler = scheduler_impl(client, request_size=Amount(piece_size/4, Data.BYTES))
-    client.listen()
-    client.register_torrent(torrent, root=os.path.join(root, 'leecher%d' % k))
-    assert client.get_session(torrent).remaining_bytes > 0
-    leecher_clients.append(scheduler)
+  for index, (peer_id, (listener, port)) in enumerate(seeder_sockets):
+    seeder_clients.append(
+        make_peer(peer_id, listener, port, os.path.join(root, 'seeder%d' % index)))
+  for index, (peer_id, (listener, port)) in enumerate(leecher_sockets):
+    leecher_clients.append(
+        make_peer(peer_id, listener, port, os.path.join(root, 'leecher%d' % index)))
 
   return torrent, seeder_clients, leecher_clients
+
 
 
 class TestIntegration(AsyncTestCase):

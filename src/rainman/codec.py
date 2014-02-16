@@ -73,7 +73,7 @@ class BDecoder(object):
       element, extra = cls.decode(input[offset:])
       offset += extra
       output.append(element)
-    return output, offset+1
+    return output, offset + 1
 
   @classmethod
   def decode_dict(cls, input):

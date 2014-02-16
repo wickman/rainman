@@ -4,30 +4,30 @@ import os
 import random
 
 from rainman.client import Client, Scheduler
-from rainman.fileset import FileSet
+from rainman.fileset import FileSet, fileslice, memslice
 from rainman.metainfo import MetaInfoBuilder
 from rainman.peer_id import PeerId
 from rainman.torrent import Torrent
 
-from tornado import gen
 from tornado.ioloop import IOLoop
 from tornado.testing import bind_unused_port
-from twitter.common.dirutil import safe_mkdtemp, safe_open
-from twitter.common.quantity import Amount, Data, Time
-from twitter.common import log, app
+from twitter.common import app
+from twitter.common.dirutil import safe_mkdtemp, safe_mkdir
 from twitter.common.log.options import LogOptions
+from twitter.common.quantity import Amount, Data
 
 
 app.add_option('-p', dest='piece_size', type=int, default=65536)
 app.add_option('-m', dest='max_filesize', type=int, default=1048576)
 app.add_option('-t', dest='total_filesize', type=int, default=4*1048576)
+app.add_option('--inmemory', dest='inmemory', default=False, action='store_true')
 
 
 class SocketClient(Client):
-  def __init__(self, sock, port, io_loop, peer_id=None):
+  def __init__(self, sock, port, io_loop, peer_id=None, **kw):
     self.__sock = sock
     self.__port = port
-    super(SocketClient, self).__init__(peer_id or PeerId.generate(), io_loop=io_loop)
+    super(SocketClient, self).__init__(peer_id or PeerId.generate(), io_loop=io_loop, **kw)
 
   def listen(self):
     self._port = self.__port
@@ -46,7 +46,8 @@ def make_ensemble(io_loop,
                   max_filesize=32768,
                   total_filesize=1048576,
                   seed=31337,
-                  scheduler_impl=Scheduler):
+                  scheduler_impl=Scheduler,
+                  slice_impl=fileslice):
   root = safe_mkdtemp()
 
   seeder_sockets = [(PeerId.generate(), bind_unused_port()) for _ in range(num_seeders)]
@@ -59,33 +60,33 @@ def make_ensemble(io_loop,
 
   random.seed(seed)
   filelist = []
-  mib = MetaInfoBuilder()
-
   files = 0
   while total_filesize > 0:
     filesize = min(total_filesize, random.randrange(0, max_filesize))
     total_filesize -= filesize
     filename = '%x.txt' % files
-    filelist.append((filename, filesize))
+    filelist.append((os.path.join(root, 'dataset', filename), filesize))
     content = random_stream(filesize)
     for replica in ['dataset'] + ['seeder%d' % k for k in range(num_seeders)]:
+      safe_mkdir(os.path.join(root, replica))
       real_path = os.path.join(root, replica, filename)
-      with safe_open(real_path, 'wb') as fp:
-        fp.write(content)
-    mib.add(real_path, filename)  # do this once
+      slice_ = slice_impl(real_path, slice(0, filesize))
+      slice_.fill()
+      slice_.write(content)
     files += 1
+
+  fs = FileSet(filelist, piece_size, slice_impl=slice_impl)
+  mib = MetaInfoBuilder(fs, relpath=os.path.join(root, 'dataset'))
 
   torrent = Torrent()
   torrent.info = mib.build(piece_size)
   torrent.announce = tracker_info
 
-  fs = FileSet(filelist, piece_size)
-
   seeder_clients = []
   leecher_clients = []
 
   def make_peer(peer_id, listener, port, chroot):
-    client = SocketClient(listener, port, io_loop, peer_id)
+    client = SocketClient(listener, port, io_loop, peer_id, slice_impl=slice_impl)
     scheduler = scheduler_impl(client, request_size=Amount(piece_size/4, Data.BYTES))
     client.listen()
     client.register_torrent(torrent, root=chroot)
@@ -108,7 +109,8 @@ def run(io_loop, options):
       num_leechers=1,
       piece_size=options.piece_size,
       max_filesize=options.max_filesize,
-      total_filesize=options.total_filesize)
+      total_filesize=options.total_filesize,
+      slice_impl=memslice if options.inmemory else fileslice)
   seeder_scheduler, seeder = seeders[0], seeders[0].client
   leecher_scheduler, leecher = leechers[0], leechers[0].client
 

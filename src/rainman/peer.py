@@ -1,13 +1,12 @@
-import hashlib
 import time
 
 from .bandwidth import Bandwidth
 from .bitfield import Bitfield
-from .fileset import Piece, Request
+from .request import Piece, Request
 from .peer_driver import PeerDriver
 
 from tornado import gen
-from twitter.common.quantity import Time, Amount
+from twitter.common.quantity import Amount, Time
 
 
 class ConnectionState(object):
@@ -31,12 +30,12 @@ class ConnectionState(object):
   @property
   def healthy(self):
     now = time.time()
-    return now - self._last_alive < self.MAX_KEEPALIVE_WINDOW.as_(Time.SECONDS)
+    return (now - self._last_alive) < self.MAX_KEEPALIVE_WINDOW.as_(Time.SECONDS)
 
   @property
   def needs_ping(self):
     now = time.time()
-    return now - self._last_alive >= self.MIN_KEEPALIVE_WINDOW.as_(Time.SECONDS)
+    return (now - self._last_alive) >= self.MIN_KEEPALIVE_WINDOW.as_(Time.SECONDS)
 
   @property
   def choked(self):

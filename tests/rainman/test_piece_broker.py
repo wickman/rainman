@@ -2,7 +2,8 @@ from contextlib import contextmanager
 import hashlib
 import os
 
-from rainman.fileset import FileSet, Piece, Request
+from rainman.fileset import FileSet
+from rainman.request import Piece, Request
 from rainman.piece_broker import PieceBroker
 from rainman.piece_manager import PieceManager
 from rainman.testing import make_fileset

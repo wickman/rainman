@@ -1,24 +1,15 @@
+import binascii
 import hashlib
 import os
-import tempfile
 
-from .bitfield import Bitfield
-from .fileset import (
-    FileSet,
-    fileslice,
-    Piece,
-    Request,
-)
-from .iopool import IOPool
+from .fileset import FileSet, fileslice
+from .request import Request
 from .sliceset import SliceSet
 
-from tornado import gen, ioloop
 from twitter.common.dirutil import (
     safe_mkdir,
     safe_mkdtemp,
-    safe_open,
     safe_rmtree,
-    safe_size,
 )
 from twitter.common import log
 from twitter.common.lang import Compatibility
@@ -34,27 +25,8 @@ class PieceManager(object):
   DEFAULT_SPLAT_BYTES = 64 * 1024
 
   @classmethod
-  def from_metainfo(cls, metainfo, **kw):
-    return cls(FileSet.from_metainfo(metainfo), list(metainfo.pieces), **kw)
-
-  @classmethod
-  def fill(cls, filename, size, splat=None):
-    "Fills file `filename` with `size` bytes from `splat` or 0s if splat is None."
-    splat = splat or b'\x00' * cls.DEFAULT_SPLAT_BYTES
-    splat_size = len(splat)
-    current_size = safe_size(filename)
-    assert current_size <= size
-    if current_size != size:
-      diff = size - current_size
-      with safe_open(filename, 'a+b') as fp:
-        while diff > 0:
-          if diff > splat_size:
-            fp.write(splat)
-            diff -= splat_size
-          else:
-            fp.write(splat[:diff])
-            diff = 0
-    return size - current_size
+  def from_metainfo(cls, metainfo, slice_impl=fileslice, **kw):
+    return cls(FileSet.from_metainfo(metainfo, slice_impl=slice_impl), list(metainfo.pieces), **kw)
 
   def __init__(self, fileset, piece_hashes=None, chroot=None):
     self._fileset = fileset
@@ -118,19 +90,23 @@ class PieceManager(object):
   # TODO(wickman) make this async via IOPool -- this means pulling
   # initialization out of __init__
   def initialize(self):
-    touched = 0
-    total_size = 0
-    # zero out files
-    for filename, filesize in self._fileset:
-      fullpath = os.path.join(self._chroot, filename)
-      touched += self.fill(fullpath, filesize)
-      total_size += filesize
+    touched = False
+    # fill out files
+    for slice_ in self._fileset.iter_files():
+      touched |= slice_.rooted_at(self._chroot).fill()
+    log.debug('%s initialize touched files: %s' % (self, touched))
     # load up cached pieces file if it's there
-    if touched == 0 and os.path.exists(self.hashfile):
+    if not touched and os.path.exists(self.hashfile):
+      log.debug('%s loaded existing hashfile.' % self)
       with open(self.hashfile) as fp:
         self._actual_pieces = fp.read()
+        # block it into usable indices
+        self._actual_pieces = [
+          self._actual_pieces[offset:offset + 20]
+          for offset in range(0, len(self._actual_pieces), 20)]
     # or compute it on the fly
-    if len(self._actual_pieces) != self._fileset.num_pieces:
+    if len(self._actual_pieces) != self._fileset.num_pieces * 20:
+      log.debug('%s writing new hashfile.' % self)
       self._actual_pieces = list(self.iter_hashes())
       with open(self.hashfile, 'wb') as fp:
         fp.write(b''.join(self._actual_pieces))
@@ -138,6 +114,10 @@ class PieceManager(object):
     for index in range(self._fileset.num_pieces):
       if self._actual_pieces[index] == self._pieces[index]:
         self._sliceset.add(self.to_slice(self.whole_piece(index)))
+      log.debug('%s has %s hash index %d' % (
+           self,
+           'incorrect' if self._actual_pieces[index] != self._pieces[index] else 'correct',
+           index))
 
   # ---- helpers
   def update_cache(self, index):
@@ -184,7 +164,14 @@ class PieceManager(object):
         yield request
 
   def iter_pieces(self):
-    """iterate over the pieces backed by this fileset.  blocking."""
+    """iterate over the piece blobs backed by this fileset.  blocking."""
+    for index in range(self.num_pieces):
+      request = self.whole_piece(index)
+      yield b''.join(slice_.rooted_at(self._chroot).read()
+                     for slice_ in self._fileset.iter_slices(request))
+
+  """
+  def iter_pieces(self):
     # TODO(wickman)  Port this over to use the fileslice interface.
     chunk = ''
     for fn, _ in self._fileset:
@@ -199,12 +186,14 @@ class PieceManager(object):
             break
     if len(chunk) > 0:
       yield chunk
+  """
 
   def iter_hashes(self):
     """iterate over the sha1 hashes, blocking."""
-    for chunk in self.iter_pieces():
-      yield hashlib.sha1(chunk).digest()
+    for index, chunk in enumerate(self.iter_pieces()):
+      digest = hashlib.sha1(chunk).digest()
+      log.debug('PieceManager %d = %s' % (index, binascii.hexlify(digest)))
+      yield digest
 
   def destroy(self):
     safe_rmtree(self._chroot)
-

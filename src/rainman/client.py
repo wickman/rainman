@@ -1,8 +1,6 @@
 from binascii import hexlify
-from collections import namedtuple
 import errno
 import functools
-import hashlib
 import math
 import os
 import random
@@ -10,11 +8,11 @@ import socket
 
 from .bounded_map import BoundedDecayingMap
 from .handshake import PeerHandshake
+from .fileset import fileslice
 from .peer import Peer
 from .peer_tracker import PeerTracker
 from .piece_broker import PieceBroker
 from .session import Session
-from .time_decay_map import TimeDecayMap
 
 from tornado import gen
 from tornado.ioloop import PeriodicCallback
@@ -33,7 +31,12 @@ class Client(TCPServer):
   PORT_RANGE = range(6881, 6890)
   FILTER_INTERVAL = Amount(1, Time.MINUTES)
 
-  def __init__(self, peer_id, chroot=None, io_loop=None, session_impl=Session):
+  def __init__(self,
+               peer_id,
+               chroot=None,
+               io_loop=None,
+               session_impl=Session,
+               slice_impl=fileslice):
     self.peer_id = peer_id
     self._ip = socket.gethostbyname(socket.gethostname())
     self._chroot = chroot or safe_mkdtemp()
@@ -45,6 +48,7 @@ class Client(TCPServer):
     self._failed_handshakes = 0
     self._port = None
     self._session_impl = session_impl
+    self._slice_impl = slice_impl  # maybe this should instead be broker_impl?
     self._peer_callback = self.default_peer_callback
     super(Client, self).__init__(io_loop=io_loop)
 
@@ -102,7 +106,7 @@ class Client(TCPServer):
       return
     target_dir = root or os.path.join(self._chroot, hexlify(torrent.handshake_prefix))
     self._piece_brokers[torrent.handshake_prefix] = piece_broker = PieceBroker.from_metainfo(
-        torrent.info, chroot=target_dir, io_loop=self.io_loop)
+        torrent.info, chroot=target_dir, io_loop=self.io_loop, slice_impl=self._slice_impl)
     # TODO(wickman) this needs to be asynchronized via iopool
     piece_broker.initialize()
     self._torrents[torrent.handshake_prefix] = torrent
@@ -198,7 +202,7 @@ class Client(TCPServer):
     handshake_prefix = yield gen.Task(iostream.read_bytes, PeerHandshake.PREFIX_LENGTH)
     try:
       torrent, session = self.establish_session(handshake_prefix)
-    except self.Error as e:
+    except self.Error:
       self._failed_handshakes += 1
       iostream.close()
       return
@@ -207,8 +211,9 @@ class Client(TCPServer):
 
 
 class Scheduler(object):
-  """A fair scheduler that tries to maintain even ingress/egress bandwidth across all
-     torrents.
+  """Piece/connection scheduler for clients.
+
+     BEP-003
 
      The currently deployed choking algorithm avoids fibrillation by only
      changing who's choked once every ten seconds.  It does reciprocation and
@@ -219,53 +224,12 @@ class Scheduler(object):
      file, it uses its upload rate rather than its download rate to decide who
      to unchoke.
 
-     fastest_downloaders = sorted(iter_peers(), key=lambda peer.egress_bandwidth)
-     fastest_uploaders = sorted(iter_peers(), key=lambda peer.ingress_bandwidth)
-
-
      For optimistic unchoking, at any one time there is a single peer which is
      unchoked regardless of it's upload rate (if interested, it counts as one
      of the four allowed downloaders.) Which peer is optimistically unchoked
      rotates every 30 seconds.  To give them a decent chance of getting a
      complete piece to upload, new connections are three times as likely to
      start as the current optimistic unchoke as anywhere else in the rotation.
-
-     choke_timeout = Amount(10, Time.SECONDS)
-     max_unchoked_peers = 4
-     max_connections = N
-
-
-
-     def order_peers_by_age(peers):
-       pass
-
-     def peer_bandwidth_metric(session, peer):
-       if session.remaining_size == 0:
-         return session.egress_bandwidth
-       else:
-         return session.ingress_bandwidth
-
-     def iter_interested_peers():
-       for session in client.sessions:
-         for peer in session.peers.values():
-           if peer.remote_interested:
-             yield (session, peer)
-
-     peers_by_interest = sorted(iter_interested_peers, lambda key: peer_bandwidth_metric, reverse=True)
-     peers_by_interest, below_cut = peers_by_interest[:max_unchoked_peers], peers_by_interest[max_unchoked_peers:]
-     min_max_bandwidth = peer_bandwidth_metric(peers_by_interest[-1])
-     peers_to_unchoke = [peer for _, peer in peers_by_interest] + [
-                         peer for (session, peer) in iter_interested_peers()
-                         if peer_bandwidth_metric(session, peer) > min_max_bandwidth]
-     unchoke_requests = [gen.Task(peer.send_unchoke) for peer in peers_to_unchoke]
-     # isn't quite right.
-     # if below_cut:
-     #   unchoke_requests.append(gen.Task(random.choice(below_cut).send_unchoke))
-
-     def decide_chokes():
-       pass
-
-     #------
 
      4 steps of the scheduler:
 
@@ -311,12 +275,11 @@ class Scheduler(object):
 
   def notify_new_pieces(self, torrent, haves, _):
     # If we've received any new pieces, wake up consumers.
-    log.debug('[%s] notify_new_pieces(%s)' % (self.client.peer_id, hexlify(torrent.handshake_prefix)))
     session = self.client.get_session(torrent)
     new_pieces = sum(not session.bitfield[index] for index in haves)
     if new_pieces:
-      log.debug('[%s] %d pieces have become available for torrent %s' % (
-          self.client.peer_id, new_pieces, hexlify(torrent.handshake_prefix)))
+      log.debug('[%s] %d pieces have become available for torrent.' % (
+          self.client.peer_id, new_pieces))
       self._pieces_available.notify_all()
 
   def rate_limit_torrent(self, torrent, peer_id):
@@ -346,7 +309,7 @@ class Scheduler(object):
                 if session.remaining_bytes]
     sessions.sort(key=lambda val: val[2], reverse=True)  # sort sessions by remaining
     aggregate_bytes = sum(val[2] for val in sessions)  # aggregate total
-    sessions = [(torrent, session, int(math.ceil(1. * remaining / aggregate_bytes)))
+    sessions = [(torrent, session, int(math.ceil(1. * quota * remaining / aggregate_bytes)))
                 for (torrent, session, remaining) in sessions]  # normalize
     for torrent, session, allocated in sessions:
       for k in range(allocated):
@@ -437,19 +400,15 @@ class Scheduler(object):
     # TODO(wickman) Make this smarter, for now just always flush queues but only if
     # we're not choked.
     while self.active:
-      try:
-        for session in self.client.sessions:
-          for peer in session.peers:
-            while True:
-              log.debug('[%s] trying to send to %s.' % (self.client.peer_id, peer))
-              piece = (yield peer.send_next_piece())
-              if not piece:
-                break
-              log.debug('[%s] sent piece %s to peer [%s].' % (self.client.peer_id, piece, peer))
-        yield gen.Task(self.io_loop.add_timeout, self.io_loop.time() + 0.1)
-      except Exception as e:
-        import traceback
-        log.error(traceback.format_exc())
+      for session in self.client.sessions:
+        for peer in session.peers:
+          while True:
+            log.debug('[%s] trying to send to %s.' % (self.client.peer_id, peer))
+            piece = (yield peer.send_next_piece())
+            if not piece:
+              break
+            log.debug('[%s] sent piece %s to peer [%s].' % (self.client.peer_id, piece, peer))
+      yield gen.Task(self.io_loop.add_timeout, self.io_loop.time() + 0.1)
 
   @gen.coroutine
   def rarest_pieces(self, count=20):
@@ -465,7 +424,7 @@ class Scheduler(object):
       if not rarest:
         log.debug('[%s] has no pieces to request, waiting.' % self.client.peer_id)
         try:
-          yield self._pieces_available.wait() # (deadline=1.0)  # add a deadline to prevent deadlock
+          yield self._pieces_available.wait()
           log.debug('[%s] now has pieces available.' % self.client.peer_id)
           continue
         except toro.Timeout:

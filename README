@@ -1,26 +1,9 @@
 rainman is a pure python implementation of the bittorrent protocol on top of
 tornado.
 
-currently undergoing a breaking refactor, but most of the individual
-components are tested and functional.
+currently undergoing a refactor, but most of the individual components are
+tested and functional.
 
 to run tests:
 
   >> ./pants tests/rainman:all -v
-
-to generate a source distribution:
-
-  >> ./pants setup_py src/rainman
-
-or an egg distribution
-
-  >> ./pants setup_py --run=bdist_egg src/rainman
-
-there are three tools which can be built in the following manner:
-
-  >> ./pants src/rainmain/bin:client
-  >> ./pants src/rainmain/bin:make_torrent
-  >> ./pants src/rainmain/bin:tracker
-
-this will produce .pex files which are self-contained hashbanged python
-executables.  client/tracker currently non-functional.

@@ -182,7 +182,7 @@ class Scheduler(object):
         key, peer = self.requests.pop_random()
       except BoundedDecayingMap.Empty:
         log.debug('[%s] No requests available, deferring.' % self.client.peer_id)
-        yield gen.Task(self.io_loop.add_timeout, self.io_loop.time() + 0.1)
+        yield self.io_loop.add_timeout(self.io_loop.time() + 0.1)
         continue
 
       handshake_prefix, block = key
@@ -212,7 +212,7 @@ class Scheduler(object):
             if not piece:
               break
             log.debug('[%s] sent piece %s to peer [%s].' % (self.client.peer_id, piece, peer))
-      yield gen.Task(self.io_loop.add_timeout, self.io_loop.time() + 0.1)
+      yield self.io_loop.add_timeout(self.io_loop.time() + 0.1)
 
   @gen.coroutine
   def rarest_pieces(self, count=20):
@@ -285,7 +285,7 @@ class Scheduler(object):
             if not random_peer.am_interested:
               log.debug('[%s] want to request %s from %s but we are choked, setting interested.' % (
                   self.client.peer_id, block, random_peer.id))
-              yield gen.Task(random_peer.send_interested)
+              yield random_peer.send_interested()
 
               owners.remove(random_peer)  # remove this peer since we're choked
               if not owners:
@@ -308,7 +308,7 @@ class Scheduler(object):
           log.debug('[%s] requesting %s from peer [%s].' % (self.client.peer_id, block, random_peer))
 
       # yield to somebody else
-      yield gen.Task(self.io_loop.add_timeout, self.io_loop.time() + 0.1)
+      yield self.io_loop.add_timeout(self.io_loop.time() + 0.1)
 
   def start(self):
     log.debug('[%s] scheduler starting.' % self.client.peer_id)

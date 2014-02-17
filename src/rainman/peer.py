@@ -236,8 +236,7 @@ class Peer(PeerDriver):
 
     # In case the piece is actually an unpopulated request, populate.
     if isinstance(piece, Request):
-      piece = Piece(piece.index, piece.offset, piece.length,
-                    (yield gen.Task(self._piece_broker.read, piece)))
+      piece = Piece(piece.index, piece.offset, piece.length, (yield self._piece_broker.read(piece)))
 
     yield super(Peer, self).send_piece(piece)
     self._out.sent(piece.length)
@@ -315,4 +314,4 @@ class Peer(PeerDriver):
   def piece(self, piece):
     self._logger('Received %s from [%s]' % (piece, self._id))
     self._in.sent(piece.length)
-    self._invoke_piece_receipt(piece, (yield gen.Task(self._piece_broker.write, piece)))
+    self._invoke_piece_receipt(piece, (yield self._piece_broker.write(piece)))

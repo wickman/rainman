@@ -29,7 +29,7 @@ class PieceBroker(PieceManager):
       self._bitfield[index] = piece == actual_piece
 
   # ---- io_loop interface
-  @gen.engine
+  @gen.coroutine
   def read(self, request, callback):
     """Read a :class:`Request` asynchronously.
 
@@ -39,12 +39,11 @@ class PieceBroker(PieceManager):
       raise TypeError('PieceManager.read expects request of type request, got %s' % type(request))
 
     slices = list(self._fileset.iter_slices(request))
-    read_slices = yield [
-        gen.Task(self._iopool.add, self._fs.read, slice_.rooted_at(self._chroot))
-        for slice_ in slices]
-    callback(b''.join(read_slices))
+    read_slices = yield [self._iopool.add(self._fs.read, slice_.rooted_at(self._chroot))
+                         for slice_ in slices]
+    raise gen.Return(b''.join(read_slices))
 
-  @gen.engine
+  @gen.coroutine
   def write(self, piece, callback):
     """Write a Piece (piece) asynchronously.
 
@@ -56,24 +55,20 @@ class PieceBroker(PieceManager):
 
     if self.to_slice(piece) in self._sliceset:
       log.debug('Dropping dupe write(%s)' % piece)
-      callback()
-      return
+      raise gen.Return(None)
 
     slices = []
     offset = 0
     for slice_ in self._fileset.iter_slices(piece):
-      slices.append(
-          gen.Task(self._iopool.add,
-                   self._fs.write,
-                   slice_.rooted_at(self._chroot),
-                   piece.block[offset:offset + slice_.length]))
+      slices.append(self._iopool.add(
+          self._fs.write, slice_.rooted_at(self._chroot), piece.block[offset:offset + slice_.length]))
       offset += slice_.length
     yield slices
-    callback((yield gen.Task(self.validate, piece)))
+    raise gen.Return((yield self.validate(piece)))
 
   # XXX(wickman) This logic is actually incorrect when the block is bigger than a piece.
   # Consider correcting that, though it isn't a big priority.
-  @gen.engine
+  @gen.coroutine
   def validate(self, piece, callback):
     whole_piece = self.whole_piece(piece.index)
     piece_slice = self.to_slice(piece)
@@ -84,24 +79,22 @@ class PieceBroker(PieceManager):
     self._sliceset.add(piece_slice)
     if full_slice not in self._sliceset:
       # the piece isn't complete so don't bother with an expensive calculation
-      callback(False)
-      return
+      raise gen.Return(False)
 
     log.debug('FileIOPool.touch: Performing SHA1 on piece %s' % piece.index)
     # Consider pushing this computation onto an IOPool
-    self._actual_pieces[piece.index] = hashlib.sha1(
-        (yield gen.Task(self.read, whole_piece))).digest()
+    self._actual_pieces[piece.index] = hashlib.sha1((yield self.read(whole_piece))).digest()
     if self._pieces[piece.index] == self._actual_pieces[piece.index]:
       log.debug('FileIOPool.touch: Finished piece %s!' % piece.index)
       self._bitfield[piece.index] = True
       self.update_cache(piece.index)
-      callback(True)
+      raise gen.Return(True)
     else:
       # the hash was incorrect.  none of this data is good.
       log.debug('FileIOPool.touch: Corrupt piece %s, erasing extent %s' % (
           piece.index, full_slice))
       self._sliceset.erase(full_slice)
-      callback(False)
+      raise gen.Return(False)
 
   def stop(self):
     self._iopool.stop()

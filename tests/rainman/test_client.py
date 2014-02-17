@@ -83,8 +83,11 @@ class TestClient(AsyncTestCase):
     yield gen.Task(client_stream.connect, ('localhost', port))
     yield gen.Task(client_stream.write, handshake)
     yield gen.Task(client_stream.read_bytes, PeerHandshake.LENGTH)
+    self.io_loop.clear_current()
     _, fake_session = peer_broker.establish_session(PeerHandshake.make(torrent.info))
-    assert fake_session.peer_id
+    # what the fuck -- why is this necessary?
+    yield gen.Task(self.io_loop.add_timeout, self.io_loop.time() + 0.1)
+    assert fake_session.peer_id == self.CLIENT_PEER_ID
     assert fake_session.iostream
 
   @gen_test

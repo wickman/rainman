@@ -133,8 +133,8 @@ class Client(TCPServer):
     session.add_peer(peer)
 
   # --- handshake logic
-  @gen.engine
-  def handshake(self, torrent, iostream, session, prefix='', callback=None):
+  @gen.coroutine
+  def handshake(self, torrent, iostream, session, prefix=''):
     """Complete the handshake given a session.
 
        Uses:
@@ -144,7 +144,8 @@ class Client(TCPServer):
     write_handshake = PeerHandshake.make(torrent.info, self.peer_id)
     read_handshake, _ = yield [
         gen.Task(iostream.read_bytes, PeerHandshake.LENGTH - len(prefix)),
-        gen.Task(iostream.write, write_handshake)]
+        gen.Task(iostream.write, write_handshake),
+    ]
     read_handshake = prefix + read_handshake
 
     succeeded = False
@@ -158,8 +159,7 @@ class Client(TCPServer):
       self.log('Got bad handshake: %s' % e)
       iostream.close()
 
-    if callback:
-      callback(handshake.peer_id if succeeded else None)
+    raise gen.Return(handshake.peer_id if succeeded else None)
 
   def establish_session(self, handshake_prefix):
     torrent = self._torrents.get(handshake_prefix)
@@ -171,8 +171,7 @@ class Client(TCPServer):
     return torrent, session
 
   @gen.coroutine
-  def maybe_add_peer(self, handshake_task, torrent, iostream, session):
-    peer_id = yield handshake_task
+  def maybe_add_peer(self, peer_id, torrent, iostream, session):
     if peer_id in session.peer_ids:
       iostream.close()
       raise gen.Return(None)
@@ -189,9 +188,9 @@ class Client(TCPServer):
     torrent, session = self.establish_session(torrent.handshake_prefix)
     iostream = IOStream(socket.socket(socket.AF_INET, socket.SOCK_STREAM), io_loop=self.io_loop)
     yield gen.Task(iostream.connect, address)
-    handshake_task = gen.Task(self.handshake, torrent, iostream, session)
-    raise gen.Return((yield gen.Task(
-        self.maybe_add_peer, handshake_task, torrent, iostream, session)))
+    peer_id = yield self.handshake(torrent, iostream, session)
+    peer_id = yield self.maybe_add_peer(peer_id, torrent, iostream, session)
+    raise gen.Return(peer_id)
 
   @gen.coroutine
   def handle_stream(self, iostream, address):
@@ -202,6 +201,7 @@ class Client(TCPServer):
     except self.Error:
       self._failed_handshakes += 1
       iostream.close()
-      return
-    handshake_task = gen.Task(self.handshake, torrent, iostream, session, prefix=handshake_prefix)
-    yield gen.Task(self.maybe_add_peer, handshake_task, torrent, iostream, session)
+      raise gen.Return(None)
+    peer_id = yield self.handshake(torrent, iostream, session, prefix=handshake_prefix)
+    peer_id = yield self.maybe_add_peer(peer_id, torrent, iostream, session)
+    raise gen.Return(peer_id)

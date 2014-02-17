@@ -77,7 +77,7 @@ class StaticPeerTracker(PeerTracker):
     with open(self._filename) as fp:
       for line in fp:
         try:
-          peer_id, host, port = line.strip().split()
+          _, host, port = line.strip().split()
           port = int(port)
         except ValueError:
           log.debug('StaticPeerTracker got bad line: %s' % line)

@@ -1,6 +1,7 @@
 import functools
 import math
 import random
+import socket
 
 from .bounded_map import BoundedDecayingMap
 from .peer import Peer
@@ -67,6 +68,7 @@ class Scheduler(object):
 
     # scheduling constants
     self._request_size = int(request_size.as_(Data.BYTES))
+    self._ip = socket.gethostbyname(socket.gethostname())  # TODO: is this the best way?
 
   @property
   def num_connections(self):
@@ -90,7 +92,8 @@ class Scheduler(object):
 
   def peer_callback(self, torrent, peer_id, iostream):
     session = self.client.get_session(torrent)
-    if peer_id in session.peer_ids or self.rate_limit_torrent(torrent, peer_id):
+    if peer_id in session.peer_ids or self.rate_limit_torrent(torrent, peer_id) or (
+        peer_id == self.client.peer_id):
       log.debug('[%s] dropping incoming peer %s' % (self.client.peer_id, peer_id))
       iostream.close()
       return
@@ -119,13 +122,11 @@ class Scheduler(object):
         if total_connections >= self.MAX_CONNECTIONS:
           return connections
         try:
-          peer_id, address = self.client.get_tracker(torrent).get_random(
-              exclude=[self.client.peer_id])
+          address = self.client.get_tracker(torrent).get_random(exclude=[
+              (self._ip, self.client.port)])
         except PeerTracker.EmptySet:
           break  # continue onto next torrent
-        if peer_id == self.client.peer_id:  # do not connection to self
-          continue
-        if peer_id not in session.peer_ids and (torrent, address) not in connections:
+        if (torrent, address) not in connections:
           connections.append((torrent, address))
         else:
           # TODO(wickman) Does it make sense to find another?

@@ -4,6 +4,7 @@ from rainman.fs import MemoryFilesystem
 from rainman.scheduler import Scheduler
 from rainman.testing import make_ensemble
 
+import mock
 from tornado import gen
 from tornado.testing import (
     AsyncTestCase,
@@ -41,16 +42,19 @@ class TestIntegration(AsyncTestCase):
 
   @gen_test
   def test_allocate_connections(self):
-    torrent, seeders, leechers = make_ensemble(
-        self.io_loop, num_seeders=1, num_leechers=1, fs=MemoryFilesystem())
-    seeder_scheduler = seeders[0]
-    leecher_scheduler = leechers[0]
+    with mock.patch('socket.gethostbyname') as ghbn:
+      ghbn.return_value = '127.0.0.1'
 
-    # check connection alocation
-    connections = seeder_scheduler._allocate_connections()
-    assert connections == []
-    connections = leecher_scheduler._allocate_connections()
-    assert connections == [(torrent, ('127.0.0.1', seeder_scheduler.client.port))]
+      torrent, seeders, leechers = make_ensemble(
+          self.io_loop, num_seeders=1, num_leechers=1, fs=MemoryFilesystem())
+      seeder_scheduler = seeders[0]
+      leecher_scheduler = leechers[0]
+
+      # check connection alocation
+      connections = seeder_scheduler._allocate_connections()
+      assert connections == []
+      connections = leecher_scheduler._allocate_connections()
+      assert connections == [(torrent, ('127.0.0.1', seeder_scheduler.client.port))]
 
   @gen_test
   def test_integrate(self):

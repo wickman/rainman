@@ -2,6 +2,7 @@ from __future__ import print_function
 
 import os
 import random
+import socket
 
 from .client import Client
 from .fileset import FileSet, Fileslice

@@ -7,3 +7,7 @@ tested and functional.
 to run tests:
 
   >> ./pants tests/rainman:all -v
+
+to run a bittorrent session live on your laptop (like magic!)
+
+  >> ./pants py src/rainman/bin:test_integration --inmemory

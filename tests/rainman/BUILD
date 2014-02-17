@@ -60,6 +60,7 @@ python_tests(
   name = 'test_integration',
   sources = ['test_integration.py'],
   dependencies = [
+    python_requirement('mock'),
     pants('src/rainman'),
   ],
 )

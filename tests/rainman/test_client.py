@@ -1,13 +1,12 @@
 from contextlib import contextmanager
 import socket
-import threading
 
 from rainman.client import Client
 from rainman.handshake import PeerHandshake
 from rainman.peer_id import PeerId
 from rainman.testing import make_metainfo, make_torrent
 
-from tornado import gen, netutil
+from tornado import gen
 from tornado.iostream import IOStream
 from tornado.testing import (
     AsyncTestCase,

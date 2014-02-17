@@ -1,13 +1,10 @@
 from math import ceil
 import os
-import random
 import struct
 import tempfile
 
 from rainman.fileset import FileSet
 from rainman.piece_manager import PieceManager
-
-import pytest
 
 
 def test_empty_input():

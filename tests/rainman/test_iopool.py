@@ -11,9 +11,9 @@ class TestFileIOPool(AsyncTestCase):
   FILES = [('a.txt', 10000), ('b.txt', 20000), ('c.txt', 5000)]
   PIECE_SIZE = 4096
 
-  @staticmethod
-  def fileset():
-    return FileSet(TestFileIOPool.FILES, TestFileIOPool.PIECE_SIZE)
+  @classmethod
+  def fileset(cls):
+    return FileSet(cls.FILES, cls.PIECE_SIZE)
 
   def test_basic(self):
     fs = self.fileset()

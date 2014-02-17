@@ -17,11 +17,11 @@ class TestClock(object):
 
 def test_construction():
   with pytest.raises(ValueError):
-    bw = Bandwidth(window=20)
+    Bandwidth(window=20)
   with pytest.raises(ValueError):
-    bw = Bandwidth(window=Amount(20, Data.GB))
+    Bandwidth(window=Amount(20, Data.GB))
   with pytest.raises(ValueError):
-    bw = Bandwidth(denominator=Data.GB)
+    Bandwidth(denominator=Data.GB)
   # Defaults / Time values should work
   Bandwidth()
   Bandwidth(window=Amount(1, Time.SECONDS))

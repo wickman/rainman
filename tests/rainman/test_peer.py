@@ -1,3 +1,5 @@
+import socket
+
 from tornado import netutil
 from tornado.iostream import IOStream
 from tornado.testing import (

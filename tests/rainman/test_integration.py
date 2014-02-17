@@ -3,11 +3,12 @@ from __future__ import print_function
 import os
 import random
 
-from rainman.client import Client, Scheduler
+from rainman.client import Client
 from rainman.fileset import FileSet, Fileslice
 from rainman.fs import MemoryFilesystem, DISK
 from rainman.metainfo import MetaInfoBuilder
 from rainman.peer_id import PeerId
+from rainman.scheduler import Scheduler
 from rainman.torrent import Torrent
 
 from tornado import gen

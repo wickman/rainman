@@ -32,7 +32,7 @@ def main(args, options):
   def add_file(filename):
     print('Adding %s' % filename)
     filelist.append(os.path.realpath(filename))
-   
+
   def add_dir(dirname):
     for root, _, files in os.walk(dirname):
       for filename in files:

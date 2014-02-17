@@ -1,7 +1,6 @@
 from __future__ import print_function
 
 import binascii
-import os
 
 from rainman.torrent import Torrent
 
@@ -15,7 +14,7 @@ def main(args, options):
     app.help()
 
   torrent = Torrent.from_file(args[0])
-  
+
   print('Torrent: %s' % args[0])
   print('Announce url: %s' % torrent.announce)
 
@@ -32,10 +31,10 @@ def main(args, options):
   for index, hash in enumerate(torrent.info.piece_hashes):
     print('   [%4d]: %s' % (index, binascii.hexlify(hash)))
   print()
-  
+
   print('File manifest:')
   for mif in files:
     print('  offset: [%9d-%9d] size: [%9d] filename: %s' % (mif.start, mif.end, mif.length, mif.name))
-  
+
 
 app.main()

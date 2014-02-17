@@ -1,5 +1,4 @@
 from collections import defaultdict
-import time
 
 from rainman.codec import BEncoder
 

@@ -46,7 +46,7 @@ class MetaInfoBuilder(object):
     return cls(
         [filename],
         relpath=os.path.dirname(filename),
-        name=os.path.basename(basedir),
+        name=os.path.basename(filename),
         piece_size=piece_size)
 
   def __init__(self, filelist, piece_size=None, relpath=None, name=None):

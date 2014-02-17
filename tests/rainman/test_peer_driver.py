@@ -1,6 +1,6 @@
 from rainman.bitfield import Bitfield
 from rainman.request import Piece, Request
-from rainman.peer_driver import Command, PeerDriver
+from rainman.peer_driver import PeerDriver
 
 from tornado import gen
 from tornado.testing import AsyncTestCase, gen_test

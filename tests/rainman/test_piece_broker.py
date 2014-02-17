@@ -1,9 +1,3 @@
-from binascii import hexlify
-from contextlib import contextmanager
-import hashlib
-import os
-
-from rainman.fileset import FileSet
 from rainman.request import Piece, Request
 from rainman.piece_broker import PieceBroker
 from rainman.piece_manager import PieceManager
@@ -11,8 +5,6 @@ from rainman.testing import make_metainfo
 
 from tornado import gen
 from tornado.testing import AsyncTestCase, gen_test
-from twitter.common.contextutil import temporary_dir
-from twitter.common.dirutil import safe_mkdtemp
 
 
 from twitter.common import log
@@ -27,7 +19,6 @@ class TestPieceBroker(AsyncTestCase):
   def test_main(self):
     piece_size = 4
     filelist = (('a.txt', b'hello'), ('b.txt', b'world'), ('c.txt', b'hello world'))
-    filelist_normal = [(fn, len(content)) for (fn, content) in filelist]
     td, fs, metainfo = make_metainfo(filelist, piece_size)
 
     pm = PieceManager(fs, chroot=td)

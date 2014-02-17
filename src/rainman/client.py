@@ -8,7 +8,7 @@ import socket
 
 from .bounded_map import BoundedDecayingMap
 from .handshake import PeerHandshake
-from .fileset import fileslice
+from .fs import Fileslice, DISK
 from .peer import Peer
 from .peer_tracker import PeerTracker
 from .piece_broker import PieceBroker
@@ -36,7 +36,7 @@ class Client(TCPServer):
                chroot=None,
                io_loop=None,
                session_impl=Session,
-               slice_impl=fileslice):
+               fs=DISK):
     self.peer_id = peer_id
     self._ip = socket.gethostbyname(socket.gethostname())
     self._chroot = chroot or safe_mkdtemp()
@@ -48,7 +48,7 @@ class Client(TCPServer):
     self._failed_handshakes = 0
     self._port = None
     self._session_impl = session_impl
-    self._slice_impl = slice_impl  # maybe this should instead be broker_impl?
+    self._fs = fs  # this should probably be broker_impl
     self._peer_callback = self.default_peer_callback
     super(Client, self).__init__(io_loop=io_loop)
 
@@ -106,12 +106,16 @@ class Client(TCPServer):
       return
     target_dir = root or os.path.join(self._chroot, hexlify(torrent.handshake_prefix))
     self._piece_brokers[torrent.handshake_prefix] = piece_broker = PieceBroker.from_metainfo(
-        torrent.info, chroot=target_dir, io_loop=self.io_loop, slice_impl=self._slice_impl)
+        torrent.info,
+        chroot=target_dir,
+        io_loop=self.io_loop,
+        fs=self._fs)
     # TODO(wickman) this needs to be asynchronized via iopool
     piece_broker.initialize()
     self._torrents[torrent.handshake_prefix] = torrent
     self._sessions[torrent.handshake_prefix] = session = self._session_impl(
-        piece_broker, io_loop=self.io_loop)
+        piece_broker,
+        io_loop=self.io_loop)
     # by default do not start the tracker
     tracker = self._trackers[torrent.handshake_prefix] = PeerTracker.get(
         torrent, self.peer_id, session)

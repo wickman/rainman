@@ -23,6 +23,16 @@ python_binary(
 
 
 python_binary(
+  name = 'inspect_torrent',
+  source = 'inspect_torrent.py',
+  dependencies = [
+    pants(':twitter.common.app'),
+    pants('src/rainman'),
+  ]
+)
+
+
+python_binary(
   name = 'tracker',
   source = 'tracker.py',
   dependencies = [

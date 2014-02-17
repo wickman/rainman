@@ -2,7 +2,8 @@ import binascii
 import hashlib
 import os
 
-from .fileset import FileSet, fileslice
+from .fileset import FileSet
+from .fs import DISK
 from .request import Request
 from .sliceset import SliceSet
 
@@ -25,16 +26,20 @@ class PieceManager(object):
   DEFAULT_SPLAT_BYTES = 64 * 1024
 
   @classmethod
-  def from_metainfo(cls, metainfo, slice_impl=fileslice, **kw):
-    return cls(FileSet.from_metainfo(metainfo, slice_impl=slice_impl), list(metainfo.pieces), **kw)
+  def from_metainfo(cls, metainfo, **kw):
+    return cls(
+        FileSet.from_metainfo(metainfo),
+        list(metainfo.piece_hashes),
+        **kw)
 
-  def __init__(self, fileset, piece_hashes=None, chroot=None):
+  def __init__(self, fileset, piece_hashes=None, chroot=None, fs=DISK):
     self._fileset = fileset
     self._pieces = piece_hashes or [b'\x00' * 20] * self._fileset.num_pieces
     self._actual_pieces = []
     self._fileset = fileset
     self._sliceset = SliceSet()
     self._chroot = chroot or safe_mkdtemp()
+    self._fs = fs
     safe_mkdir(self._chroot)
 
   def __contains__(self, block):
@@ -93,7 +98,7 @@ class PieceManager(object):
     touched = False
     # fill out files
     for slice_ in self._fileset.iter_files():
-      touched |= slice_.rooted_at(self._chroot).fill()
+      touched |= self._fs.fill(slice_.rooted_at(self._chroot))
     log.debug('%s initialize touched files: %s' % (self, touched))
     # load up cached pieces file if it's there
     if not touched and os.path.exists(self.hashfile):
@@ -167,7 +172,7 @@ class PieceManager(object):
     """iterate over the piece blobs backed by this fileset.  blocking."""
     for index in range(self.num_pieces):
       request = self.whole_piece(index)
-      yield b''.join(slice_.rooted_at(self._chroot).read()
+      yield b''.join(self._fs.read(slice_.rooted_at(self._chroot))
                      for slice_ in self._fileset.iter_slices(request))
 
   def iter_hashes(self):

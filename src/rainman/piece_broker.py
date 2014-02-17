@@ -12,8 +12,8 @@ from twitter.common import log
 class PieceBroker(PieceManager):
   """Translates FileSet read/write operations to IOLoop operations via a ThreadPool."""
 
-  def __init__(self, fileset, piece_hashes=None, chroot=None, io_loop=None):
-    super(PieceBroker, self).__init__(fileset, piece_hashes, chroot)
+  def __init__(self, fileset, piece_hashes=None, chroot=None, io_loop=None, **kw):
+    super(PieceBroker, self).__init__(fileset, piece_hashes, chroot, **kw)
     self._bitfield = Bitfield(len(self._pieces))
     self._io_loop = io_loop or ioloop.IOLoop.instance()
     self._iopool = IOPool(io_loop=self._io_loop)
@@ -40,7 +40,7 @@ class PieceBroker(PieceManager):
 
     slices = list(self._fileset.iter_slices(request))
     read_slices = yield [
-        gen.Task(self._iopool.add, slice_.rooted_at(self._chroot).read)
+        gen.Task(self._iopool.add, self._fs.read, slice_.rooted_at(self._chroot))
         for slice_ in slices]
     callback(b''.join(read_slices))
 
@@ -63,7 +63,9 @@ class PieceBroker(PieceManager):
     offset = 0
     for slice_ in self._fileset.iter_slices(piece):
       slices.append(
-          gen.Task(self._iopool.add, slice_.rooted_at(self._chroot).write,
+          gen.Task(self._iopool.add,
+                   self._fs.write,
+                   slice_.rooted_at(self._chroot),
                    piece.block[offset:offset + slice_.length]))
       offset += slice_.length
     yield slices

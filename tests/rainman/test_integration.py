@@ -4,7 +4,8 @@ import os
 import random
 
 from rainman.client import Client, Scheduler
-from rainman.fileset import FileSet, fileslice, memslice
+from rainman.fileset import FileSet, Fileslice
+from rainman.fs import MemoryFilesystem, DISK
 from rainman.metainfo import MetaInfoBuilder
 from rainman.peer_id import PeerId
 from rainman.torrent import Torrent
@@ -43,7 +44,6 @@ class FastScheduler(Scheduler):
   CHOKE_INTERVAL = Amount(250, Time.MILLISECONDS)
 
 
-
 def random_stream(N):
   # return bytearray((random.getrandbits(8) for _ in range(N)))
   return os.urandom(N)
@@ -57,7 +57,7 @@ def make_ensemble(io_loop,
                   total_filesize=1048576,
                   seed=31337,
                   scheduler_impl=Scheduler,
-                  slice_impl=fileslice):
+                  fs=DISK):
   root = safe_mkdtemp()
 
   seeder_sockets = [(PeerId.generate(), bind_unused_port()) for _ in range(num_seeders)]
@@ -75,28 +75,30 @@ def make_ensemble(io_loop,
     filesize = min(total_filesize, random.randrange(0, max_filesize))
     total_filesize -= filesize
     filename = '%x.txt' % files
-    filelist.append((os.path.join(root, 'dataset', filename), filesize))
+    filelist.append((filename, filesize))
     content = random_stream(filesize)
     for replica in ['dataset'] + ['seeder%d' % k for k in range(num_seeders)]:
       safe_mkdir(os.path.join(root, replica))
       real_path = os.path.join(root, replica, filename)
-      slice_ = slice_impl(real_path, slice(0, filesize))
-      slice_.fill()
-      slice_.write(content)
+      slice_ = Fileslice(real_path, slice(0, filesize))
+      fs.fill(slice_)
+      fs.write(slice_, content)
     files += 1
 
-  fs = FileSet(filelist, piece_size, slice_impl=slice_impl)
-  mib = MetaInfoBuilder(fs, relpath=os.path.join(root, 'dataset'))
+  fileset = FileSet(filelist, piece_size)
+  mib = MetaInfoBuilder(
+      fileset.rooted_at(os.path.join(root, 'dataset')),
+      relpath=os.path.join(root, 'dataset'))
 
   torrent = Torrent()
-  torrent.info = mib.build(piece_size)
+  torrent.info = mib.build(fs)
   torrent.announce = tracker_info
 
   seeder_clients = []
   leecher_clients = []
 
   def make_peer(peer_id, listener, port, chroot):
-    client = SocketClient(listener, port, io_loop, peer_id, slice_impl=slice_impl)
+    client = SocketClient(listener, port, io_loop, peer_id, fs=fs)
     scheduler = scheduler_impl(client, request_size=Amount(piece_size/4, Data.BYTES))
     client.listen()
     client.register_torrent(torrent, root=chroot)
@@ -112,11 +114,11 @@ def make_ensemble(io_loop,
   return torrent, seeder_clients, leecher_clients
 
 
-
 class TestIntegration(AsyncTestCase):
   @gen_test
   def test_single_seeder_single_leecher(self):
-    torrent, seeders, leechers = make_ensemble(self.io_loop, num_seeders=1, num_leechers=1)
+    torrent, seeders, leechers = make_ensemble(
+        self.io_loop, num_seeders=1, num_leechers=1, fs=MemoryFilesystem())
     seeder = seeders[0].client
     leecher = leechers[0].client
 
@@ -129,15 +131,16 @@ class TestIntegration(AsyncTestCase):
 
   @gen_test
   def test_allocate_connections(self):
-    torrent, seeders, leechers = make_ensemble(self.io_loop, num_seeders=1, num_leechers=1)
-    seeder_scheduler, seeder = seeders[0], seeders[0].client
-    leecher_scheduler, leecher = leechers[0], leechers[0].client
+    torrent, seeders, leechers = make_ensemble(
+        self.io_loop, num_seeders=1, num_leechers=1, fs=MemoryFilesystem())
+    seeder_scheduler = seeders[0]
+    leecher_scheduler = leechers[0]
 
     # check connection alocation
     connections = seeder_scheduler._allocate_connections()
     assert connections == []
     connections = leecher_scheduler._allocate_connections()
-    assert connections == [(torrent, ('127.0.0.1', seeder.port))]
+    assert connections == [(torrent, ('127.0.0.1', seeder_scheduler.client.port))]
 
   @gen_test
   def test_integrate(self):
@@ -146,7 +149,7 @@ class TestIntegration(AsyncTestCase):
         num_seeders=1,
         num_leechers=1,
         scheduler_impl=FastScheduler,
-        slice_impl=memslice)
+        fs=MemoryFilesystem())
     seeder_scheduler, seeder = seeders[0], seeders[0].client
     leecher_scheduler, leecher = leechers[0], leechers[0].client
 

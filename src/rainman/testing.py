@@ -1,49 +1,33 @@
-from contextlib import contextmanager
 import os
 
-from rainman.fileset import FileSet
-from rainman.metainfo import MetaInfoBuilder
-from rainman.piece_broker import PieceBroker
-from rainman.piece_manager import PieceManager
-from rainman.torrent import Torrent
+from .fileset import FileSet, Fileslice
+from .fs import DISK
+from .metainfo import MetaInfoBuilder
+from .torrent import Torrent
 
-from twitter.common.contextutil import temporary_dir
+from twitter.common.dirutil import safe_mkdtemp
 
 
-@contextmanager
-def make_fileset(filelist, piece_size):
+def make_fileset(filelist, piece_size, fs=DISK):
   "Given (filename, contents) list, return dir, FileSet pair."
-  with temporary_dir() as td:
-    for filename, contents in filelist:
-      with open(os.path.join(td, filename), 'wb') as fp:
-        fp.write(contents)
-    filelist = [(os.path.join(td, filename), len(contents))
-                for (filename, contents) in filelist]
-    yield td, FileSet(filelist, piece_size)
+  td = safe_mkdtemp()
+  for filename, contents in filelist:
+    sl = Fileslice(os.path.join(td, filename), slice(0, len(contents)))
+    fs.fill(sl)
+    fs.write(sl, contents)
+  filelist = [(filename, len(contents)) for (filename, contents) in filelist]
+  return td, FileSet(filelist, piece_size)
 
 
-@contextmanager
-def make_metainfo(filelist, piece_size):
-  with make_fileset(filelist, piece_size) as (td, fs):
-    mib = MetaInfoBuilder(fs, relpath=td)
-    yield td, fs, mib.build(piece_size)
+def make_metainfo(filelist, piece_size, fs=DISK):
+  td, fileset = make_fileset(filelist, piece_size, fs=fs)
+  mib = MetaInfoBuilder(fileset.rooted_at(td), relpath=td)
+  return td, fileset, mib.build(fs)
 
 
-@contextmanager
-def make_piece_broker(filelist, piece_size, complete=False, **kw):
-  "Given (filename, contents) list, return dir, FileSet pair."
-  with make_metainfo(filelist, piece_size) as (td, fs, metainfo):
-    hashes = None
-    if complete:
-      pm = PieceManager(fs, chroot=td)
-      hashes = list(pm.iter_hashes())
-    yield td, fs, metainfo, PieceBroker(fs, chroot=td, piece_hashes=hashes, **kw)
-
-
-@contextmanager
-def make_torrent(filelist, piece_size, tracker):
-  with make_metainfo(filelist, piece_size) as (td, fs, metainfo):
-    torrent = Torrent()
-    torrent.info = metainfo
-    torrent.announce = tracker
-    yield td, fs, torrent
+def make_torrent(filelist, piece_size, tracker, fs=DISK):
+  td, fileset, metainfo = make_metainfo(filelist, piece_size, fs=fs)
+  torrent = Torrent()
+  torrent.info = metainfo
+  torrent.announce = tracker
+  return td, fileset, torrent

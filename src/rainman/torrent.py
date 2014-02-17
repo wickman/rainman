@@ -5,21 +5,34 @@ from .metainfo import MetaInfo
 from .handshake import PeerHandshake
 
 
-class Torrent(object):
+class Torrent(dict):
   @classmethod
   def from_file(cls, filename):
     with open(filename, 'rb') as fp:
-      mi, _ = BDecoder.decode(fp.read())
-    return cls(mi)
+      torrent, _ = BDecoder.decode(fp.read())
+    if 'info' not in torrent or 'announce' not in torrent:
+      raise ValueError('Invalid .torrent file!')
+    return cls.from_metainfo(torrent['info'], torrent['announce'])
 
-  def __init__(self, d=None):
-    self._d = d or {}
-    self._info = MetaInfo(self._d.get('info')) if 'info' in self._d else None
+  @classmethod
+  def from_metainfo(cls, metainfo, announce):
+    return cls(info=MetaInfo(metainfo), announce=announce)
+
+  def __init__(self, *args, **kw):
+    super(Torrent, self).__init__(*args, **kw)
     self._invalidate()
 
+  def to_file(self, filename):
+    assert 'announce' in self and 'info' in self
+    with open(filename, 'wb') as fp:
+      fp.write(BEncoder.encode(self))
+
   def _invalidate(self):
-    self._hash = hashlib.sha1(self.info.raw()).digest() if self.info else None
-    self._prefix = PeerHandshake.make(self._hash) if self._hash else None
+    self._hash = hashlib.sha1(BEncoder.encode(self.get('info', {}))).digest()
+    self._prefix = PeerHandshake.make(self._hash)
+
+  def raw(self):
+    return BEncoder.encode(self)
 
   @property
   def hash(self):
@@ -32,32 +45,22 @@ class Torrent(object):
   def handshake(self, peer_id=None):
     return PeerHandshake.make(self._hash, peer_id)
 
-  def to_file(self, filename):
-    assert 'announce' in self._d and 'info' in self._d
-    with open(filename, 'wb') as fp:
-      fp.write(BEncoder.encode(self._d))
-
   @property
   def announce(self):
-    return self._d.get('announce')
+    return self.get('announce')
 
   @announce.setter
   def announce(self, value):
     assert isinstance(value, str)
-    self._d['announce'] = value
+    self['announce'] = value
 
   @property
   def info(self):
-    return self._info
+    return self['info']
 
   @info.setter
   def info(self, value):
-    if isinstance(value, dict):
-      self._d['info'] = value
-      self._info = MetaInfo(value)
-    elif isinstance(value, MetaInfo):
-      self._info = value
-      self._d['info'] = value.as_dict()
-    else:
-      raise ValueError(value)
+    if not isinstance(value, dict):
+      raise TypeError('Info must be a dictionary or MetaInfo.')
+    self['info'] = MetaInfo(value)
     self._invalidate()

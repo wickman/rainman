@@ -1,38 +1,16 @@
 import binascii
+from collections import namedtuple
 import hashlib
 import math
 import os
 
 from .codec import BEncoder
+from .fileset import FileSet
+from .fs import DISK
 
 from twitter.common import log
+from twitter.common.lang import Compatibility
 from twitter.common.quantity import Amount, Data
-
-
-class MetaInfoFile(object):
-  def __init__(self, name, start, end):
-    self._name = name
-    self._start = start
-    self._end = end
-
-  @property
-  def name(self):
-    return self._name
-
-  @property
-  def start(self):
-    return self._start
-
-  @property
-  def end(self):
-    return self._end
-
-  @property
-  def length(self):
-    return self.end - self.start
-
-  def __repr__(self):
-    return 'MetaInfoFile(%r, %r, %r)' % (self._name, self._start, self._end)
 
 
 class MetaInfoBuilder(object):
@@ -55,27 +33,59 @@ class MetaInfoBuilder(object):
       return int(cls.MAX_CHUNK_SIZE.as_(Data.BYTES))
     return chunksize
 
-  def __init__(self, fileset, relpath=None, name=None):
-    self._name = name
-    self._fileset = fileset
-    self._relpath = relpath
+  @classmethod
+  def from_dir(cls, basedir, piece_size=None):
+    def iter_files():
+      for root, _, files in os.walk(basedir):
+        for filename in files:
+          yield os.path.join(root, filename)
+    return cls(iter_files(), relpath=basedir, name=os.path.basename(basedir), piece_size=piece_size)
 
-  def _iter_hashes(self):
-    for index, chunk in enumerate(self._fileset.iter_chunks()):
+  @classmethod
+  def from_file(cls, filename, piece_size=None):
+    return cls(
+        [filename],
+        relpath=os.path.dirname(filename),
+        name=os.path.basename(basedir),
+        piece_size=piece_size)
+
+  def __init__(self, filelist, piece_size=None, relpath=None, name=None):
+    value_error = ValueError(
+        'filelist should be a list of files or list of (filename, filesize) pairs.')
+    def expand_filelist():
+      for element in filelist:
+        if isinstance(element, Compatibility.string):
+          yield (element, os.path.getsize(element))
+        elif isinstance(element, (list, tuple)):
+          if len(element) != 2:
+            raise value_error
+          if not isinstance(element[0], Compatibility.string):
+            raise value_error
+          if not isinstance(element[1], Compatibility.integer):
+            raise value_error
+          yield element
+        else:
+          raise value_error
+    self._filelist = list(expand_filelist())
+    self._piece_size = self.choose_size(sum(filesize for _, filesize in self._filelist))
+    self._fileset = FileSet(self._filelist, self._piece_size)
+    self._relpath = relpath
+    self._name = name
+
+  def _iter_hashes(self, fs=DISK):
+    for index, chunk in enumerate(self._fileset.iter_chunks(fs=fs)):
       digest = hashlib.sha1(chunk).digest()
       log.debug('MetaInfoBuilder %d = %s' % (index, binascii.hexlify(digest)))
       yield digest
 
-  def build(self, piece_size=None):
+  def build(self, fs=DISK):
     if len(self._fileset) == 0:
-      raise self.EmptyInfo("No files in metainfo!")
-    piece_size = piece_size or self.choose_size(self._fileset.size)
+      raise self.EmptyInfo("No files in metainfo fileset!")
+
     d = {
-      'pieces': b''.join(self._iter_hashes()),
-      'piece length': piece_size
+      'pieces': b''.join(self._iter_hashes(fs=fs)),
+      'piece length': self._piece_size,
     }
-    if self._name:
-      d['name'] = self._name
 
     def relpath(filename):
       if self._relpath is None:
@@ -87,73 +97,77 @@ class MetaInfoBuilder(object):
     if len(self._fileset) == 1:
       # special-case for single-file
       fileset_name, _ = iter(self._fileset).next()
-      d.update(
-          length=self._fileset.size,
-          name=os.path.basename(fileset_name).encode(self.ENCODING))
+      d['name'] = self._name or os.path.basename(fileset_name).encode(self.ENCODING)
+      d['length'] = self._fileset.size
     else:
+      d['name'] = self._name or 'none'
       def encode_filename(filename):
-        log.info('Encoding filename: %s' % filename)
         return [sp.encode(self.ENCODING) for sp in relpath(filename).split(os.path.sep)]
       d['files'] = [{'length': filesize, 'path': encode_filename(filename)}
                     for filename, filesize in self._fileset]
+
     return MetaInfo(d)
 
 
-class MetaInfo(object):
+class MetaInfoFile(namedtuple('MetaInfoFile', 'name start end')):
+  @property
+  def length(self):
+    return self.end - self.start
+
+
+class MetaInfo(dict):
   ENCODING = 'utf8'
 
-  def __init__(self, info):
-    self._info = info
+  def __init__(self, *args, **kw):
+    super(MetaInfo, self).__init__(*args, **kw)
     self._assert_sanity()
 
   def _assert_sanity(self):
     expected_keys = ('pieces', 'piece length',)
     for key in expected_keys:
-      assert key in self._info, 'Missing key: %s' % key
-    assert ('length' in self._info) + ('files' in self._info) == 1
-    if 'length' in self._info:
-      pieces, leftover = divmod(self._info['length'], self._info['piece length'])
+      assert key in self, 'Missing key: %s' % key
+    assert ('length' in self) + ('files' in self) == 1
+    if 'length' in self:
+      pieces, leftover = divmod(self['length'], self['piece length'])
       pieces += leftover > 0
-      assert len(self._info['pieces']) == pieces * 20
+      assert len(self['pieces']) == pieces * 20
 
   @property
   def name(self):
-    return self._info.get('name')
+    return self['name']
 
   @property
   def length(self):
-    if 'length' in self._info:
-      return self._info['length']
+    if 'length' in self:
+      return self['length']
     else:
-      return sum(file['length'] for file in self._info.get('files', []))
+      return sum(pair['length'] for pair in self.get('files', []))
 
   @property
   def piece_size(self):
-    return self._info.get('piece length')
+    return self['piece length']
 
   @property
-  def pieces(self):
-    pieces = self._info.get('pieces')
+  def piece_hashes(self):
+    pieces = self['pieces']
     for k in range(0, len(pieces), 20):
       yield pieces[k:k + 20]
 
   @property
   def num_pieces(self):
-    return len(self._info.get('pieces')) / 20
+    return len(self['pieces']) // 20
 
-  @property
-  def files(self):
-    if 'length' in self._info:
-      yield MetaInfoFile(self.name, 0, self._info['length'])
+  def files(self, rooted_at=None):
+    if 'length' in self:
+      rooted_at = rooted_at if rooted_at is not None else ''
+      yield MetaInfoFile(os.path.join(rooted_at, self.name), 0, self['length'])
     else:
       offset = 0
-      for fd in self._info.get('files'):
-        path = self._info.get('name', []) + fd['path']
+      name = rooted_at if rooted_at is not None else ''  # ignore 'name'
+      for fd in self['files']:
+        path = [name] + fd['path']
         yield MetaInfoFile(os.path.join(*path), offset, offset + fd['length'])
         offset += fd['length']
 
   def raw(self):
-    return BEncoder.encode(self._info)
-
-  def as_dict(self):
-    return self._info
+    return BEncoder.encode(self)

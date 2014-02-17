@@ -64,43 +64,43 @@ class TestClient(AsyncTestCase):
     listener, port = bind_unused_port()
     peer_broker = SocketClient(self.SERVER_PEER_ID, listener, self.io_loop, port)
     peer_broker.listen()
-    with make_metainfo([('a.txt', 'hello world')], 4) as (_, _, metainfo):
-      handshake = PeerHandshake.make(metainfo, peer_id=self.CLIENT_PEER_ID)
-      client_stream = IOStream(socket.socket(), io_loop=self.io_loop)
-      yield gen.Task(client_stream.connect, ('localhost', port))
-      yield gen.Task(client_stream.write, handshake)
-      self.io_loop.clear_current()
-      assert peer_broker._failed_handshakes == 1
+    _, _, metainfo = make_metainfo([('a.txt', 'hello world')], 4)
+    handshake = PeerHandshake.make(metainfo, peer_id=self.CLIENT_PEER_ID)
+    client_stream = IOStream(socket.socket(), io_loop=self.io_loop)
+    yield gen.Task(client_stream.connect, ('localhost', port))
+    yield gen.Task(client_stream.write, handshake)
+    self.io_loop.clear_current()
+    assert peer_broker._failed_handshakes == 1
 
   @gen_test
   def test_handle_stream(self):
     listener, port = bind_unused_port()
     peer_broker = SocketClient(self.SERVER_PEER_ID, listener, self.io_loop, port)
     peer_broker.listen()
-    with make_torrent([('a.txt', 'hello world')], 4, 'testing://') as (_, _, torrent):
-      peer_broker.register_torrent(torrent)
-      handshake = PeerHandshake.make(torrent.info, peer_id=self.CLIENT_PEER_ID)
-      client_stream = IOStream(socket.socket(), io_loop=self.io_loop)
-      yield gen.Task(client_stream.connect, ('localhost', port))
-      yield gen.Task(client_stream.write, handshake)
-      yield gen.Task(client_stream.read_bytes, PeerHandshake.LENGTH)
-      _, fake_session = peer_broker.establish_session(PeerHandshake.make(torrent.info))
-      assert fake_session.peer_id
-      assert fake_session.iostream
+    _, _, torrent = make_torrent([('a.txt', 'hello world')], 4, 'testing://')
+    peer_broker.register_torrent(torrent)
+    handshake = PeerHandshake.make(torrent.info, peer_id=self.CLIENT_PEER_ID)
+    client_stream = IOStream(socket.socket(), io_loop=self.io_loop)
+    yield gen.Task(client_stream.connect, ('localhost', port))
+    yield gen.Task(client_stream.write, handshake)
+    yield gen.Task(client_stream.read_bytes, PeerHandshake.LENGTH)
+    _, fake_session = peer_broker.establish_session(PeerHandshake.make(torrent.info))
+    assert fake_session.peer_id
+    assert fake_session.iostream
 
   @gen_test
   def test_initiate_connection(self):
-    with make_torrent([('a.txt', 'hello world')], 4, 'testing://') as (_, _, torrent):
-      with self.make_peer_broker(torrent, self.SERVER_PEER_ID) as server:
-        with self.make_peer_broker(torrent, self.CLIENT_PEER_ID) as client:
-          server.listen()
+    _, _, torrent = make_torrent([('a.txt', 'hello world')], 4, 'testing://')
+    with self.make_peer_broker(torrent, self.SERVER_PEER_ID) as server:
+      with self.make_peer_broker(torrent, self.CLIENT_PEER_ID) as client:
+        server.listen()
 
-          peer_id = yield gen.Task(client.initiate_connection, torrent, ('localhost', server.port))
-          assert peer_id is not None
+        peer_id = yield gen.Task(client.initiate_connection, torrent, ('localhost', server.port))
+        assert peer_id is not None
 
-          _, client_session = client.establish_session(PeerHandshake.make(torrent.info))
-          assert client_session.peer_id == self.SERVER_PEER_ID
-          assert peer_id == self.SERVER_PEER_ID
+        _, client_session = client.establish_session(PeerHandshake.make(torrent.info))
+        assert client_session.peer_id == self.SERVER_PEER_ID
+        assert peer_id == self.SERVER_PEER_ID
 
-          _, server_session = server.establish_session(PeerHandshake.make(torrent.info))
-          assert server_session.peer_id == self.CLIENT_PEER_ID
+        _, server_session = server.establish_session(PeerHandshake.make(torrent.info))
+        assert server_session.peer_id == self.CLIENT_PEER_ID

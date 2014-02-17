@@ -42,8 +42,7 @@ class TestIntegration(AsyncTestCase):
 
   @gen_test
   def test_allocate_connections(self):
-    with mock.patch('socket.gethostbyname') as ghbn:
-      ghbn.return_value = '127.0.0.1'
+
 
       torrent, seeders, leechers = make_ensemble(
           self.io_loop, num_seeders=1, num_leechers=1, fs=MemoryFilesystem())
@@ -71,3 +70,5 @@ class TestIntegration(AsyncTestCase):
     leecher.get_session(torrent).register_done_callback(self.stop)
     leecher_scheduler.start()
     seeder_scheduler.start()
+    self.wait()
+

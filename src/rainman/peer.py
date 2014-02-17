@@ -167,9 +167,7 @@ class Peer(PeerDriver):
     self._logger('Sending bitfield to [%s]' % self._id)
     yield self.send_bitfield(self._piece_broker.bitfield)
     while self._active:
-      self._logger('Running recv from [%s]' % self._id)
       yield self.recv()
-      self._logger('Ran recv from [%s]' % self._id)
 
   def stop(self):
     self._logger('Disconnecting from [%s]' % self._id)

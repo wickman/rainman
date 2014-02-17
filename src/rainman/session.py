@@ -3,6 +3,7 @@ import functools
 from .piece_set import PieceSet
 
 import tornado.ioloop
+from tornado import stack_context
 from twitter.common import log
 from twitter.common.quantity import Amount, Time
 
@@ -53,20 +54,18 @@ class Session(object):
 
   # ----- incoming peers from client
   def register_done_callback(self, done_callback):
-    log.debug('Setting done callback.')
     if self.remaining_bytes == 0:
-      log.debug('Invoking done callback.')
-      self.io_loop.append(done_callback)
+      self.io_loop.add_callback(done_callback)
       return
-    log.debug('Appending done callback.')
     self._done_callbacks.append(done_callback)
 
   def _on_piece_receipt(self, piece, finished):
     self._queued_receipts.append((piece, finished))
     if self.remaining_bytes == 0:
       callbacks, self._done_callbacks = self._done_callbacks, []
+      log.debug('Finished session, invoking done callbacks.')
       for callback in callbacks:
-        self.io_loop.add_callback(callback)
+        self.io_loop.add_callback(stack_context.wrap(callback))
 
   def add_peer(self, peer):
     log.debug('Session adding new peer %s' % peer)
@@ -81,7 +80,6 @@ class Session(object):
 
   # ----- maintenance
   def _update_piece_set(self, peer_id, haves, have_nots):
-    log.debug('Peer %s updating piece_set.' % peer_id)
     for have in haves:
       self.piece_set.add_one(have)
     for have_not in have_nots:
@@ -112,7 +110,6 @@ class Session(object):
       self.io_loop.add_callback(peer.send_keepalive)
 
   def maintenance(self):
-    log.debug('Running maintenance.')
     self._filter_dead_peers()
     self._broadcast_new_pieces()
     self._ping_peers_if_necessary()

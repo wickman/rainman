@@ -67,7 +67,7 @@ class MetaInfoBuilder(object):
         else:
           raise value_error
     self._filelist = list(expand_filelist())
-    self._piece_size = self.choose_size(sum(filesize for _, filesize in self._filelist))
+    self._piece_size = piece_size or self.choose_size(sum(filesize for _, filesize in self._filelist))
     self._fileset = FileSet(self._filelist, self._piece_size)
     self._relpath = relpath
     self._name = name

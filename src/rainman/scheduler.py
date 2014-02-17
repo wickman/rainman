@@ -85,6 +85,7 @@ class Scheduler(object):
     if new_pieces:
       log.debug('[%s] %d pieces have become available for torrent.' % (
           self.client.peer_id, new_pieces))
+      # TODO(wickman) We also want to notify when one of our peers becomes unchoked.
       self._pieces_available.notify_all()
 
   def rate_limit_torrent(self, torrent, peer_id):
@@ -181,15 +182,13 @@ class Scheduler(object):
       try:
         key, peer = self.requests.pop_random()
       except BoundedDecayingMap.Empty:
-        log.debug('[%s] No requests available, deferring.' % self.client.peer_id)
-        yield self.io_loop.add_timeout(self.io_loop.time() + 0.1)
+        yield gen.Task(self.io_loop.add_timeout, self.io_loop.time() + 0.1)
         continue
 
       handshake_prefix, block = key
       yield self.sent_requests.add(key, peer)
 
-      log.debug('[%s] sending request %s to peer [%s].' % (
-          self.client.peer_id, block, peer))
+      log.debug('[%s] sending request %s to peer [%s].' % (self.client.peer_id, block, peer))
       yield peer.send_request(block)
 
   @gen.coroutine
@@ -207,12 +206,11 @@ class Scheduler(object):
       for session in self.client.sessions:
         for peer in session.peers:
           while True:
-            log.debug('[%s] trying to send to %s.' % (self.client.peer_id, peer))
             piece = (yield peer.send_next_piece())
             if not piece:
               break
             log.debug('[%s] sent piece %s to peer [%s].' % (self.client.peer_id, piece, peer))
-      yield self.io_loop.add_timeout(self.io_loop.time() + 0.1)
+      yield gen.Task(self.io_loop.add_timeout, self.io_loop.time() + 0.1)
 
   @gen.coroutine
   def rarest_pieces(self, count=20):
@@ -226,13 +224,11 @@ class Scheduler(object):
     while self.active:
       rarest = list(iter_rarest())[:count]
       if not rarest:
-        log.debug('[%s] has no pieces to request, waiting.' % self.client.peer_id)
         try:
-          yield self._pieces_available.wait()
+          yield self._pieces_available.wait(deadline=self.io_loop.time() + 0.5)
           log.debug('[%s] now has pieces available.' % self.client.peer_id)
           continue
         except toro.Timeout:
-          log.debug('[%s] had no pieces available within timeout, retrying.' % self.client.peer_id)
           continue
       random.shuffle(rarest)
       raise gen.Return(rarest)
@@ -253,16 +249,12 @@ class Scheduler(object):
          these rare pieces.
     """
     while self.active:
-      # XXX if we are choked by everyone, we need to wait until unchokes have come before
-      # we spinloop here.
-      log.debug('[%s] queueing requests.' % self.client.peer_id)
-
       for torrent, index in (yield self.rarest_pieces()):
         # find owners of this piece that are not choking us or for whom we've not yet registered
         # intent to download
         owners = list(self.owners(torrent, index))
         if not owners:
-          log.debug('[%s] found no owners for %s[%d]' % (self.client.peer_id, torrent, index))
+          log.debug('[%s] found no owners for %s[%d]' % (self.client.peer_id, torrent.info.name, index))
           continue
 
         request_size = self._request_size
@@ -293,22 +285,13 @@ class Scheduler(object):
                 break
             continue
 
-          log.debug('[%s] requests %s %s' % (
-              self.client.peer_id,
-              'has' if self.requests.contains(key, random_peer) else 'does not have',
-              block))
-          log.debug('[%s] sent_requests %s %s' % (
-              self.client.peer_id,
-              'has' if self.sent_requests.contains(key, random_peer) else 'does not have',
-              block))
-
           # TODO(wickman) Consider deferring the sem.acquire to before the piece selection
           # in case there is a large delay and the scheduling choice would otherwise change.
           yield self.requests.add(key, random_peer)
           log.debug('[%s] requesting %s from peer [%s].' % (self.client.peer_id, block, random_peer))
 
       # yield to somebody else
-      yield self.io_loop.add_timeout(self.io_loop.time() + 0.1)
+      yield gen.Task(self.io_loop.add_timeout, self.io_loop.time() + 0.1)
 
   def start(self):
     log.debug('[%s] scheduler starting.' % self.client.peer_id)

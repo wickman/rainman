@@ -98,7 +98,8 @@ def make_ensemble(
   fileset = FileSet(filelist, piece_size)
   mib = MetaInfoBuilder(
       fileset.rooted_at(os.path.join(root, 'dataset')),
-      relpath=os.path.join(root, 'dataset'))
+      relpath=os.path.join(root, 'dataset'),
+      piece_size=piece_size)
 
   torrent = Torrent()
   torrent.info = mib.build(fs)
@@ -109,7 +110,7 @@ def make_ensemble(
 
   def make_peer(peer_id, listener, port, chroot):
     client = SocketClient(listener, port, io_loop, peer_id, fs=fs)
-    scheduler = scheduler_impl(client, request_size=Amount(piece_size / 4, Data.BYTES))
+    scheduler = scheduler_impl(client, request_size=Amount(piece_size // 4, Data.BYTES))
     client.listen()
     client.register_torrent(torrent, root=chroot)
     return scheduler

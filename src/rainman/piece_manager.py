@@ -67,6 +67,7 @@ class PieceManager(object):
     if self.have(len(self._pieces) - 1):
       _, leftover = divmod(self.total_size, self._fileset.piece_size)
       assembled += self._fileset.piece_size if not leftover else leftover
+    log.debug('Assembled size: %s' % assembled)
     return assembled
 
   @property

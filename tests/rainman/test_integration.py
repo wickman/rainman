@@ -56,7 +56,7 @@ class TestIntegration(AsyncTestCase):
       connections = leecher_scheduler._allocate_connections()
       assert connections == [(torrent, ('127.0.0.1', seeder_scheduler.client.port))]
 
-  @gen_test
+  @gen_test(timeout=20)
   def test_integrate(self):
     torrent, seeders, leechers = make_ensemble(
         self.io_loop,
@@ -71,6 +71,3 @@ class TestIntegration(AsyncTestCase):
     leecher.get_session(torrent).register_done_callback(self.stop)
     leecher_scheduler.start()
     seeder_scheduler.start()
-
-    # This test can take a while
-    self.wait(timeout=20)

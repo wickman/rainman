@@ -30,7 +30,7 @@ class PieceBroker(PieceManager):
 
   # ---- io_loop interface
   @gen.coroutine
-  def read(self, request, callback):
+  def read(self, request):
     """Read a :class:`Request` asynchronously.
 
        Returns immediately, calls callback(data) when the read is complete.
@@ -39,12 +39,13 @@ class PieceBroker(PieceManager):
       raise TypeError('PieceManager.read expects request of type request, got %s' % type(request))
 
     slices = list(self._fileset.iter_slices(request))
-    read_slices = yield [self._iopool.add(self._fs.read, slice_.rooted_at(self._chroot))
-                         for slice_ in slices]
+    read_slices = yield [
+        gen.Task(self._iopool.add, self._fs.read, slice_.rooted_at(self._chroot))
+        for slice_ in slices]
     raise gen.Return(b''.join(read_slices))
 
   @gen.coroutine
-  def write(self, piece, callback):
+  def write(self, piece):
     """Write a Piece (piece) asynchronously.
 
       Returns immediately, calls callback with no parameters when the write
@@ -60,8 +61,12 @@ class PieceBroker(PieceManager):
     slices = []
     offset = 0
     for slice_ in self._fileset.iter_slices(piece):
-      slices.append(self._iopool.add(
-          self._fs.write, slice_.rooted_at(self._chroot), piece.block[offset:offset + slice_.length]))
+      iopool_task = gen.Task(
+          self._iopool.add,
+          self._fs.write,
+          slice_.rooted_at(self._chroot),
+          piece.block[offset:offset + slice_.length])
+      slices.append(iopool_task)
       offset += slice_.length
     yield slices
     raise gen.Return((yield self.validate(piece)))
@@ -69,7 +74,7 @@ class PieceBroker(PieceManager):
   # XXX(wickman) This logic is actually incorrect when the block is bigger than a piece.
   # Consider correcting that, though it isn't a big priority.
   @gen.coroutine
-  def validate(self, piece, callback):
+  def validate(self, piece):
     whole_piece = self.whole_piece(piece.index)
     piece_slice = self.to_slice(piece)
     full_slice = self.to_slice(whole_piece)

@@ -15,6 +15,7 @@ class TestFileIOPool(AsyncTestCase):
   def fileset(cls):
     return FileSet(cls.FILES, cls.PIECE_SIZE)
 
+  @gen_test
   def test_basic(self):
     fs = self.fileset()
     pb = PieceBroker(fs, io_loop=self.io_loop)
@@ -24,30 +25,20 @@ class TestFileIOPool(AsyncTestCase):
 
     # test reads
     pc = Request(0, 0, all_files_size)
-    read_data = []
-    def read_done(data):
-      read_data.append(data)
-      self.stop()
-    pb.read(pc, read_done)
-    self.wait()
+    read_data = yield pb.read(pc, read_done)
 
-    assert len(read_data) == 1 and len(read_data[0]) == all_files_size
-    assert read_data[0] == b'\x00' * all_files_size  # by default filesets are zeroed out
+    assert len(read_data) == all_files_size
+    assert read_data == b'\x00' * all_files_size  # by default filesets are zeroed out
 
     # write
     pc = Piece(2, 0, 5000, block=b'\x01'*5000)
-    def write_done(_):
-      self.stop()
-    pb.write(pc, write_done)
-    self.wait()
+    yield pb.write(pc, write_done)
+    read_data = yield pb.read(Request(0, 0, all_files_size))
 
-    read_data = []
-    pb.read(Request(0, 0, all_files_size), read_done)
-    self.wait()
-
-    assert len(read_data) == 1 and len(read_data[0]) == all_files_size
-    assert read_data[0] == b''.join([
+    assert len(read_data) == all_files_size
+    assert read_data == b''.join([
         b'\x00' * 2 * 4096,
         b'\x01' * 5000,
         b'\x00' * (all_files_size - 2 * 4096 - 5000)])
+
     pb.destroy()

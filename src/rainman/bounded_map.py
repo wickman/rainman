@@ -28,9 +28,7 @@ class BoundedDecayingMap(object):
   def add(self, key, peer_id):
     """Indicate that we have requested key from peer_id"""
     while self._concurrent >= self._concurrency:
-      log.debug('BoundedDecayingMap blocked, waiting.')
       yield self._condition.wait()
-      log.debug('BoundedDecayingMap unblocked.')
     self._concurrent += 1
     sentinel = self.io_loop.add_timeout(
        self.io_loop.time() + self._window,
@@ -39,8 +37,6 @@ class BoundedDecayingMap(object):
 
   def __remove_internal(self, key, peer_id):
     # sanity checks
-    log.debug('BoundedDecayingMap(%s) removing %s:%s to timeout.' % (
-        self, key[1], peer_id))
     assert key in self._elements
     current_size = len(self._elements[key])
     self._elements[key] = [(pid, sentinel) for (pid, sentinel) in self._elements[key]
@@ -65,7 +61,8 @@ class BoundedDecayingMap(object):
     return any(pid == peer_id for pid, _ in self._elements[key])
 
   def pop_random(self):
-    # this is not random b/c of distribution
+    # this is not random b/c of distribution, but this at least enforces the same
+    # queueing discipline as enqueue.
     if not self._elements:
       raise self.Empty()
     key, peer_ids = random.choice(list(self._elements.items()))
@@ -78,4 +75,4 @@ class BoundedDecayingMap(object):
     return (key, peer_id)
 
   def __len__(self):
-    return self._concurrency - self._sem.counter
+    return self._concurrent

@@ -2,6 +2,7 @@ python_test_suite(name = 'all',
   dependencies = [
     pants(':test_bandwidth'),
     pants(':test_bitfield'),
+    pants(':test_bounded_map'),
     pants(':test_client'),
     pants(':test_codec'),
     pants(':test_fileset'),
@@ -12,7 +13,6 @@ python_test_suite(name = 'all',
     pants(':test_piece_manager'),
     pants(':test_piece_set'),
     pants(':test_sliceset'),
-    pants(':test_time_decay_map'),
   ]
 )
 
@@ -27,6 +27,14 @@ python_tests(
 python_tests(
   name = 'test_bitfield',
   sources = ['test_bitfield.py'],
+  dependencies = [
+    pants('src/rainman'),
+  ],
+)
+
+python_tests(
+  name = 'test_bounded_map',
+  sources = ['test_bounded_map.py'],
   dependencies = [
     pants('src/rainman'),
   ],
@@ -109,14 +117,6 @@ python_tests(
 python_tests(
   name = 'test_sliceset',
   sources = ['test_sliceset.py'],
-  dependencies = [
-    pants('src/rainman'),
-  ],
-)
-
-python_tests(
-  name = 'test_time_decay_map',
-  sources = ['test_time_decay_map.py'],
   dependencies = [
     pants('src/rainman'),
   ],

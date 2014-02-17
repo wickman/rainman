@@ -18,8 +18,8 @@ else:
   import urlparse
 
 
-class PeerTracker(dict):
-  """Base class for PeerTracker.  Implements a dictionary of peer_id => address."""
+class PeerTracker(set):
+  """Base class for PeerTracker.  Implements a set of addresses."""
   class Error(Exception): pass
   class UnknownScheme(Error): pass
   class EmptySet(Error): pass
@@ -27,14 +27,14 @@ class PeerTracker(dict):
   _REGISTRY = {}
 
   @classmethod
-  def get(cls, torrent, peer_id, session):
+  def get(cls, torrent, client):
     if torrent.announce is None:
       return EmptyPeerTracker()
     fullurl = urlparse.urlparse(torrent.announce)
     if fullurl.scheme not in cls._REGISTRY:
       raise cls.UnknownScheme('Unknown announcer scheme: %s' % fullurl.scheme)
     tracker_impl = cls._REGISTRY[fullurl.scheme]
-    return tracker_impl(torrent, peer_id, session)
+    return tracker_impl(torrent, client)
 
   @classmethod
   def register(cls, scheme, impl):
@@ -54,7 +54,7 @@ class PeerTracker(dict):
     if not self:  # if no elements
       raise self.EmptySet('No peers available to allocate.')
     exclude = exclude or frozenset()
-    return random.choice([pair for pair in self.items() if pair[0] not in exclude])
+    return random.choice([address for address in self if address not in exclude])
 
   def __init__(self, *args, **kw):
     pass
@@ -82,7 +82,7 @@ class StaticPeerTracker(PeerTracker):
         except ValueError:
           log.debug('StaticPeerTracker got bad line: %s' % line)
           continue
-        self[peer_id] = (host, port)
+        self.add((host, port))
 
   def stop(self):
     self.clear()
@@ -96,46 +96,43 @@ class ZookeeperPeerTracker(object):
   pass
 
 
-class HttpPeerTracker(object):
+class HttpPeerTracker(PeerTracker):
   """A set of Peers with whom connections may be established.
 
      In practice this periodically refreshes from a tracker.
   """
 
+  @classmethod
+  def resolve(cls, address, port):
+    rs = socket.getaddrinfo(address, port, socket.AF_INET, socket.SOCK_STREAM, socket.SOL_TCP)
+    log.debug('Adding resolved peers: %s' % ', '.join('%s:%s' % result[-1] for result in rs))
+    return frozenset(result[-1] for result in rs)
+
   # Requiring only read-only access to the session, manages the set of peers
   # with which we can establish sessions.
-  def __init__(self, session, io_loop=None):
-    """Currently needs:
-
-      session.torrent.announce
-      session.torrent.info
-      session.io_loop
-      session.peer_id
-      session.port
-      session.uploaded_bytes
-      session.downloaded_bytes
-      session.assembled_bytes
-    """
-
-    self._session = session
-    self._tracker = session.torrent.announce
-    self._io_loop = io_loop or session.io_loop or tornado.ioloop.IOLoop.instance()
+  def __init__(self, torrent, client):
+    self._peer_id = client.peer_id
+    self._port = client.port
+    self._ip = socket.gethostbyname(socket.gethostname()),  # TODO: is this the best way?
+    self._torrent = torrent
+    self._session = client.get_session(torrent)
+    self._tracker = torrent.announce
+    self._io_loop = session.io_loop
     self._http_client = httpclient.AsyncHTTPClient(io_loop=self._io_loop)
-    self._peerset = set()  # This breaks my golden rule of abstraction.
-    self._peermap = {}
+    self._valueset = set()
     self._io_loop.add_callback(self.start)
     self._handle = None
 
   def request(self):
     session = self._session
     return {
-      'info_hash': hashlib.sha1(session.torrent.info.raw()).digest(),
-      'peer_id': session.peer_id,
-      'ip': socket.gethostbyname(socket.gethostname()),  # TODO: how to get external IP?
-      'port': session.port,
+      'info_hash': hashlib.sha1(torrent.info.raw()).digest(),
+      'peer_id': self._peer_id,
+      'ip': self._ip,
+      'port': self._port,
       'uploaded': session.uploaded_bytes,
       'downloaded': session.downloaded_bytes,
-      'left': session.torrent.info.length - session.assembled_bytes,
+      'left': self._torrent.info.length - session.assembled_bytes,
     }
 
   def start(self):
@@ -168,10 +165,10 @@ class HttpPeerTracker(object):
           ip = peers[offset:offset + 4]
           port = peers[offset + 4:offset + 6]
           yield ('%d.%d.%d.%d' % struct.unpack('>BBBB', ip), struct.unpack('>H', port)[0])
-    me = (socket.gethostbyname(socket.gethostname()), self._session.port)
-    return (pair for pair in iterate() if pair != me)
+    return [pair for pair in iterate() if pair != (self._ip, self._port)]
 
   def handle_response(self, response):
+    new_peer_set = set()
     interval = 60
     if response.error:
       log.error('PeerSet failed to query %s' % self._tracker)
@@ -183,25 +180,15 @@ class HttpPeerTracker(object):
         peers = response.get('peers', [])
         log.debug('Accepted peer list:')
         for peer in self.iter_peers(peers):
-          if peer not in self._peermap:
+          if peer not in self:
             log.debug('  %s:%s' % (peer[0], peer[1]))
-            self.add(peer[0], peer[1])
+            new_peer_set.update(self.resolve(peer[0], peer[1]))
       except BDecoder.Error:
         log.error('Malformed tracker response.')
       except AssertionError:
         log.error('Malformed peer dictionary.')
     log.debug('Enqueueing next tracker request for %s seconds from now.' % interval)
+    if new_peer_set:
+      self.clear()
+      self.update(new_peer_set)
     self._handle = self._io_loop.add_timeout(datetime.timedelta(0, interval), self.enqueue_request)
-
-  def __iter__(self):
-    return iter(self._peerset)
-
-  def __contains__(self, peer):
-    assert isinstance(peer, tuple) and len(peer) == 2
-    return peer in self._peermap or peer in self._peerset
-
-  def add(self, address, port):
-    rs = socket.getaddrinfo(address, port, socket.AF_INET, socket.SOCK_STREAM, socket.SOL_TCP)
-    log.debug('Adding resolved peers: %s' % ', '.join('%s:%s' % result[-1] for result in rs))
-    self._peermap[(address, port)] = set(result[-1] for result in rs)
-    self._peerset.update(result[-1] for result in rs)

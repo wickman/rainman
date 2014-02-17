@@ -111,8 +111,7 @@ class Client(TCPServer):
         piece_broker,
         io_loop=self.io_loop)
     # by default do not start the tracker
-    tracker = self._trackers[torrent.handshake_prefix] = PeerTracker.get(
-        torrent, self.peer_id, session)
+    tracker = self._trackers[torrent.handshake_prefix] = PeerTracker.get(torrent, self)
     tracker.start()
     session.start()
     if callback:

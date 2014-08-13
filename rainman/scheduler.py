@@ -119,6 +119,7 @@ class Scheduler(object):
     sessions = [(torrent, session, int(math.ceil(1. * quota * remaining / aggregate_bytes)))
                 for (torrent, session, remaining) in sessions]  # normalize
     for torrent, session, allocated in sessions:
+      print('Torrent %s allocated %d connections.' % (torrent, allocated))
       for k in range(allocated):
         if total_connections >= self.MAX_CONNECTIONS:
           return connections

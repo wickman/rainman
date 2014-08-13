@@ -1,8 +1,9 @@
-from tornado.testing import AsyncTestCase
+from tornado.testing import AsyncTestCase, gen_test
 
 from rainman.fileset import FileSet
 from rainman.request import Request, Piece
 from rainman.piece_broker import PieceBroker
+
 
 
 # TODO(wickman) We should have a more IOPool-specific test, instead this
@@ -25,14 +26,14 @@ class TestFileIOPool(AsyncTestCase):
 
     # test reads
     pc = Request(0, 0, all_files_size)
-    read_data = yield pb.read(pc, read_done)
+    read_data = yield pb.read(pc)
 
     assert len(read_data) == all_files_size
     assert read_data == b'\x00' * all_files_size  # by default filesets are zeroed out
 
     # write
     pc = Piece(2, 0, 5000, block=b'\x01'*5000)
-    yield pb.write(pc, write_done)
+    yield pb.write(pc)
     read_data = yield pb.read(Request(0, 0, all_files_size))
 
     assert len(read_data) == all_files_size
